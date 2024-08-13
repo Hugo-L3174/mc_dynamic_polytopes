@@ -16,6 +16,8 @@ if(NOT TARGET mc_rtc::mc_control)
 endif()
 
 find_package(polito REQUIRED)
+# for cdd computations if any
+# find_package(eigen-cdd REQUIRED)
 
 
 # add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
@@ -50,6 +52,7 @@ target_link_libraries(DynamicPolytope
   PUBLIC
   mc_rtc::mc_control_fsm
   polito
+  # eigen-cdd::eigen-cdd
 )
 
 #### Exporting targets and installing ####
