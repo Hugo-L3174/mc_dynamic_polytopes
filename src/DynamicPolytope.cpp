@@ -154,13 +154,17 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
   auto CoM = robot.com();
   for(const auto contactName : activeContacts_)
   {
-    mc_tasks::lipm_stabilizer::internal::Contact newContact(robot, contactName, frictionCoeff);
-    std::pair<std::pair<double, double>, sva::PTransformd> cont(
-        std::pair<double, double>(newContact.halfLength(), newContact.halfWidth()), newContact.surfacePose());
+    sva::PTransformd contactPose = robot.surfacePose(contactName);
+    double newContactHalfLength;
+    double newContactHalfWidth;
+    // find limits of contact area
+    findHalfWidthLength(robot.surface(contactName), newContactHalfWidth, newContactHalfLength);
+
+    std::pair<std::pair<double, double>, sva::PTransformd> newContact(std::pair<double, double>(newContactHalfLength, newContactHalfWidth), contactPose);
     if(!withMoments_)
     {
       // update the correct cone in the map
-      buildForceConeFromContact(nbFrictionSides, cont, frictionCones_.at(contactName), newContact.friction(), maxForce);
+      buildForceConeFromContact(nbFrictionSides, newContact, frictionCones_.at(contactName), frictionCoeff, maxForce);
       // update faces of the cone
       // XXX find a way to not need face computations for mink sum
       DoubleDescriptionFromGenerators::Compute(frictionCones_.at(contactName), 1000);
@@ -170,8 +174,8 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
     }
     else
     {
-      buildWrenchConeFromContact(nbFrictionSides, cont, frictionCones_.at(contactName),
-                                 frictionConesMoments_.at(contactName), newContact.friction(), maxForce, CoM);
+      buildWrenchConeFromContact(nbFrictionSides, newContact, frictionCones_.at(contactName),
+                                 frictionConesMoments_.at(contactName), frictionCoeff, maxForce, CoM);
       DoubleDescriptionFromGenerators::Compute(frictionCones_.at(contactName), 1000);
       DoubleDescriptionFromGenerators::Compute(frictionConesMoments_.at(contactName), 1000);
     }

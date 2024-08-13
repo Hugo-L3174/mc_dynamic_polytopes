@@ -9,7 +9,6 @@
 #include <mc_control/fsm/Controller.h>
 #include <mc_rtc/clock.h>
 #include <mc_rtc/gui.h>
-#include <mc_tasks/lipm_stabilizer/Contact.h>
 
 #include "WrenchCones.h"
 

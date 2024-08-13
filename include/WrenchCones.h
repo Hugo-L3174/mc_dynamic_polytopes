@@ -44,3 +44,6 @@ Eigen::MatrixXd compute3DGeneratorsMatrixRaysCones(
     double m_frictionCoef);
 
 Eigen::Matrix3d skewMatrix(const Eigen::Vector3d v);
+
+// This function is inspired by the lipm stabilizer contact instanciation
+void findHalfWidthLength(const mc_rbdyn::Surface & surface, double & halfWidth, double & halfLength);

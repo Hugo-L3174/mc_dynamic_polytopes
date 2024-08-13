@@ -151,3 +151,27 @@ Eigen::Matrix3d skewMatrix(const Eigen::Vector3d v)
   // clang-format on
   return mat;
 }
+
+void findHalfWidthLength(const mc_rbdyn::Surface & surface, double & halfWidth, double & halfLength)
+{
+  const auto & surfacePoints = surface.points();
+  // Find boundaries in surface frame along the surface's sagital (x) and lateral (y) direction
+  double minSagital = std::numeric_limits<double>::max();
+  double minLateral = std::numeric_limits<double>::max();
+  double maxSagital = -std::numeric_limits<double>::max();
+  double maxLateral = -std::numeric_limits<double>::max();
+  for(const auto & point : surfacePoints)
+  {
+    // Points are defined in body frame, convert to surface frame
+    Eigen::Vector3d surfacePoint = surface.X_b_s().rotation() * (point.translation() - surface.X_b_s().translation());
+    double x = surfacePoint.x();
+    double y = surfacePoint.y();
+    minSagital = std::min(minSagital, x);
+    maxSagital = std::max(maxSagital, x);
+    minLateral = std::min(minLateral, y);
+    maxLateral = std::max(maxLateral, y);
+  }
+
+  halfLength = (maxSagital - minSagital) / 2.;
+  halfWidth = (maxLateral - minLateral) / 2.;
+}
