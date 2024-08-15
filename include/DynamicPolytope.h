@@ -67,8 +67,12 @@ struct DynamicPolytope
   // Computes the minkowsky sum of the given friction cones and puts the result in the CWC_ polytope object
   void computeMinkowskySumPolitopix();
 
+  // Computes the eCMP region from the CWC
+  // /!\ this modifies the CWC to invert and scale it, the result is still in the CWC polytope !
   void computeECMPRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot);
 
+  // Computes the 3d volume of the moments from the contact surfaces borders resulting from the CWC generating rays at
+  // these limits
   void computeMomentsRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot);
 
   /* Computes the intersection between the eCMP region and the ZMP region to get the zero moment region,
@@ -82,6 +86,19 @@ struct DynamicPolytope
 
   // Updates the internal maps of triangles for gui display for the given contact names
   void updateTrianglesGUIPolitopix();
+
+  // Updates the given normals matrix and offsets vector of the eCMP region for QP constraint or check
+  void updateECMPPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  {
+    updatePlanesMatrixConstraint(CWCForces_, Normals, Offsets);
+  };
+
+  // Updates the given normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
+  // constraint or check
+  void updateZeroMomentPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  {
+    updatePlanesMatrixConstraint(zeroMomentRegion_, Normals, Offsets);
+  };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getForceConesTriangles(const std::string & name)
   {
@@ -163,6 +180,12 @@ protected:
   {
     resultTriangles.clear();
   };
+
+  // Puts the H representation of the given polytope into a matrix (normals) and a vector (offsets) for easy
+  // testing/constraining
+  void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
+                                    Eigen::MatrixX3d & Normals,
+                                    Eigen::VectorXd & Offsets);
 
   std::string name_;
   std::set<std::string> possibleContacts_;

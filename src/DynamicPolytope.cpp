@@ -160,7 +160,8 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
     // find limits of contact area
     findHalfWidthLength(robot.surface(contactName), newContactHalfWidth, newContactHalfLength);
 
-    std::pair<std::pair<double, double>, sva::PTransformd> newContact(std::pair<double, double>(newContactHalfLength, newContactHalfWidth), contactPose);
+    std::pair<std::pair<double, double>, sva::PTransformd> newContact(
+        std::pair<double, double>(newContactHalfLength, newContactHalfWidth), contactPose);
     if(!withMoments_)
     {
       // update the correct cone in the map
@@ -352,6 +353,25 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
     {
       clearTriangles(CWCMomentTriangles_);
     }
+  }
+}
+
+void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
+                                                   Eigen::MatrixX3d & Normals,
+                                                   Eigen::VectorXd & Offsets)
+{
+  // XXX might be interesting to use a vector of mc_rbdyn::Plane in the future ? but matrixXd would be easier to put in
+  // blocks in a handmade QP where if planes we would need a for loop on every plane to fill the QP matrix
+  auto nbOfPlanes = polytope->numberOfHalfSpaces();
+  Normals.resize(nbOfPlanes, 3);
+  Offsets.resize(nbOfPlanes);
+
+  for(int halfSpaceIndex = 0; halfSpaceIndex < nbOfPlanes; halfSpaceIndex++)
+  {
+    const auto halfSpace = polytope->getHalfSpace(halfSpaceIndex);
+    Normals.row(halfSpaceIndex) << halfSpace->getCoefficient(0), halfSpace->getCoefficient(1),
+        halfSpace->getCoefficient(2);
+    Offsets(halfSpaceIndex) = halfSpace->getConstant();
   }
 }
 
