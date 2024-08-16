@@ -71,7 +71,7 @@ struct DynamicPolytope
   /* Computes the 3d volume formed between the possible ZMP area(s) and the CoM of the robot
   TODO this is potentially several convex areas! (caron tro) see how to handle this
   */
-  void computeZMPRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot);
+  void computeZMPRegion(Eigen::Vector3d comPosition);
 
   // Creates a 6d contact friction cone from the contact surface border points
   // The generators are computed then used to build the Polytope_Rn object which is added to the cones vector
@@ -148,23 +148,14 @@ struct DynamicPolytope
     return zeroMomentTriangles_;
   };
 
-  // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
-  void setCurrentContacts(const std::vector<std::string> & contactNames)
+  // Set current contact set to be used for next computation
+  void setControllerContacts(const std::vector<std::string> & contactNames)
   {
     auto waitForLock = mc_rtc::clock::now();
     std::lock_guard<std::mutex> lock(contactSetMutex_);
     mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
-    mc_rtc::log::critical("Waited {}ms to get contact lock", lockTime.count());
-    // take the previous set of contacts
-    contactsToRemove_ = activeContacts_;
-    activeContacts_.clear();
-    for(const auto contactName : contactNames)
-    {
-      // add every contact given to the active contacts
-      activeContacts_.emplace(contactName);
-      // every active contact does not need to be removed
-      contactsToRemove_.erase(contactName);
-    }
+    mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
+    controllerContacts_ = contactNames;
     // if computation has not started yet, launch it
     if(!computing_)
     {
@@ -172,7 +163,7 @@ struct DynamicPolytope
       // signal main computation thread
       cv_.notify_one();
     }
-  };
+  }
 
   void setWithMoments(bool withMoments)
   {
@@ -186,8 +177,33 @@ struct DynamicPolytope
                 double guiScale,
                 std::vector<std::string> category = {"DynamicPolytopes"});
   void removeFromGUI(mc_rtc::gui::StateBuilder & gui);
-  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes");
+  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes_");
   void removeFromLogger(mc_rtc::Logger & logger);
+
+  inline mc_rtc::duration_ms dt_loop_total() const noexcept
+  {
+    return dt_loop_total_;
+  }
+
+  inline mc_rtc::duration_ms dt_contactSet() const noexcept
+  {
+    return dt_compute_contactSet_;
+  }
+
+  inline mc_rtc::duration_ms dt_minkSum() const noexcept
+  {
+    return dt_compute_minkSum_;
+  }
+
+  inline mc_rtc::duration_ms dt_updatePlanes() const noexcept
+  {
+    return dt_update_planes_;
+  }
+
+  inline mc_rtc::duration_ms dt_guiTriangles() const noexcept
+  {
+    return dt_compute_guiTriangles_;
+  }
 
 protected:
   // Updates the faces vector used for polytope display (internal function)
@@ -211,11 +227,33 @@ protected:
                                     Eigen::MatrixX3d & Normals,
                                     Eigen::VectorXd & Offsets);
 
+  // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
+  void setCurrentContacts()
+  {
+    auto waitForLock = mc_rtc::clock::now();
+    std::lock_guard<std::mutex> lock(contactSetMutex_);
+    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
+    mc_rtc::log::critical("Region compute thread waited {}ms to get contact lock", lockTime.count());
+    // take the previous set of contacts
+    contactsToRemove_ = activeContacts_;
+    activeContacts_.clear();
+    for(const auto contactName : controllerContacts_)
+    {
+      // add every contact given to the active contacts
+      activeContacts_.emplace(contactName);
+      // every active contact does not need to be removed
+      contactsToRemove_.erase(contactName);
+    }
+  };
+
   std::string name_;
   const mc_rbdyn::Robot & robot_;
   std::set<std::string> possibleContacts_;
   std::set<std::string> activeContacts_;
   std::set<std::string> contactsToRemove_;
+
+  // intermediate names vector to be set by controller and used once per compute loop
+  std::vector<std::string> controllerContacts_;
 
   bool withMoments_;
 
@@ -251,6 +289,13 @@ protected:
   {
     return frictionConesMutexes_[contactName]; // constructs it inside the map if doesn't exist
   }
+
+  // timers to measure computation times
+  mc_rtc::duration_ms dt_loop_total_;
+  mc_rtc::duration_ms dt_compute_contactSet_;
+  mc_rtc::duration_ms dt_compute_minkSum_;
+  mc_rtc::duration_ms dt_update_planes_;
+  mc_rtc::duration_ms dt_compute_guiTriangles_;
 
   // map of polytope triangles for display
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> forceConesTrianglesMap_;

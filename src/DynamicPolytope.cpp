@@ -76,6 +76,15 @@ void DynamicPolytope::load(const mc_rtc::Configuration & config)
   config("withMoments", withMoments_);
 }
 
+void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
+{
+  logger.addLogEntry(prefix + "dt_totalLoop", this, [this]() { return dt_loop_total().count(); });
+  logger.addLogEntry(prefix + "dt_computeContactSet", this, [this]() { return dt_contactSet().count(); });
+  logger.addLogEntry(prefix + "dt_minkSum", this, [this]() { return dt_minkSum().count(); });
+  logger.addLogEntry(prefix + "dt_updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
+  logger.addLogEntry(prefix + "dt_guiTriangles", this, [this]() { return dt_guiTriangles().count(); });
+}
+
 void DynamicPolytope::computeRegions()
 {
   // This section allows to block main thread until cv_ signals that computation can start, then loops conditionally on
@@ -84,17 +93,27 @@ void DynamicPolytope::computeRegions()
   std::unique_lock<std::mutex> lk(mutex);
   cv_.wait(lk, [this]() -> bool { return computing_; });
 
+  // DCMPoly_->computeZeroMomentIntersection();
+  // DCMPoly_->computeMomentsRegion(robot().com(), robot());
+
+  // DCMPoly_->updateECMPPlanes(eCMPPlanesNormals_, eCMPPlanesOffsets_);
+
+  // DCMPoly_->updateTrianglesGUIPolitopix();
+
   while(computing_)
   {
+    auto start_loop = mc_rtc::clock::now();
+    // Lock contact set mutex, set active contacts to be used in internal loops then unlock mutex
+    setCurrentContacts();
     // Step 1.1: launch individual cones calculations in separate threads as they are independant
     computeConesFromContactSet(robot_);
 
     // XXX threadable gui triangles? or do following calculations need mutexed access to individual cones?
 
     // Step 1.2: launch ZMP region calculation at the same time, also independant
+    // zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
 
     // Step 2: wait for finished individual cones to start mink sum of the cones
-    std::lock_guard<std::mutex> lock(contactSetMutex_);
     for(auto contactName : activeContacts_)
     {
       // join all friction cones threads, ie wait they finished, then erase them from the map
@@ -102,8 +121,25 @@ void DynamicPolytope::computeRegions()
       frictionConesThreads_.at(contactName).join();
       frictionConesThreads_.erase(contactName);
     }
+    dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
 
-    // Step 3: wait for finished mink sum and ZMP region to start zero moment intersection
+    // All friction cones computed, start minkowsky sum computation
+    auto start_minkSum = mc_rtc::clock::now();
+    // computeMinkowskySumPolitopix();
+
+    // Step 3: wait for finished mink sum to convert to eCMP region (no thread needed)
+    dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
+    // computeECMPRegion(robot_.com(), robot_);
+
+    // Step 3: wait for finished ZMP region to start zero moment intersection with eCMP region
+    // zmpThread_.join()
+    // computeZeroMomentIntersection();
+
+    // XXX FOR NOW Step 4: gui computations
+    auto start_guiTriangles = mc_rtc::clock::now();
+    updateTrianglesGUIPolitopix();
+    dt_compute_guiTriangles_ = mc_rtc::clock::now() - start_guiTriangles;
+    dt_loop_total_ = mc_rtc::clock::now() - start_loop;
   }
 }
 
@@ -225,8 +261,7 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
   auto nbFrictionSides = 5;
   auto maxForce = 180.;
   auto CoM = robot.com();
-  // mutex lock contacts set
-  std::lock_guard<std::mutex> lock(contactSetMutex_);
+
   for(const auto contactName : activeContacts_)
   {
     sva::PTransformd contactPose = robot.surfacePose(contactName);
@@ -317,7 +352,7 @@ void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rb
   // TopGeomTools::translate(CWCForces_, CoM);
 }
 
-void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)
+void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
 {
   // XXX dummy zone for now: convex area formed by the polygon envelope of feet + com position
   int dim = 3;
@@ -325,10 +360,10 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition, const mc_rbd
 
   // manually adding left foot points
   std::vector<Eigen::Vector3d> generators;
-  auto lfPoints = robot.surface("LeftFoot").points();
+  auto lfPoints = robot_.surface("LeftFoot").points();
   for(auto lfPoint : lfPoints)
   {
-    lfPoint = lfPoint * robot.surface("LeftFoot").X_0_s(robot);
+    lfPoint = lfPoint * robot_.surface("LeftFoot").X_0_s(robot_);
     boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
     boost::numeric::ublas::vector<double> coords(3);
     coords.insert_element(0, lfPoint.translation().x());
@@ -339,10 +374,10 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition, const mc_rbd
   }
 
   // same for right foot points
-  auto rfPoints = robot.surface("RightFoot").points();
+  auto rfPoints = robot_.surface("RightFoot").points();
   for(auto rfPoint : rfPoints)
   {
-    rfPoint = rfPoint * robot.surface("RightFoot").X_0_s(robot);
+    rfPoint = rfPoint * robot_.surface("RightFoot").X_0_s(robot_);
     boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
     boost::numeric::ublas::vector<double> coords(3);
     coords.insert_element(0, rfPoint.translation().x());
