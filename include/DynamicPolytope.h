@@ -20,19 +20,32 @@
 
 struct DynamicPolytope
 {
-  DynamicPolytope(const std::string & name, std::set<std::string> contactNames);
+  DynamicPolytope(const std::string & name, std::set<std::string> contactNames, const mc_rbdyn::Robot & robot);
   ~DynamicPolytope();
+
+  // stopping function for destructor
+  inline void stopThread()
+  {
+    // XXX stop inner threads as well?
+    computing_ = false;
+    mainComputeThread_.join();
+  }
+
+  // main computation function that calls all region calculations in sequence
+  // intended to be called in a thread, and will thread region calculations correctly
+  void computeRegions();
 
   // compute the contact force cone into a 3D polytope
   void buildForceConeFromContact(int numberOfFrictionSides,
-                                 std::pair<std::pair<double, double>, sva::PTransformd> & contactSurface,
+                                 sva::PTransformd contactSurface,
                                  boost::shared_ptr<Polytope_Rn> & forceCone,
+                                 std::mutex & forceConeMutex,
                                  double m_frictionCoef,
                                  double maxForce);
 
   // compute the force cone and the associated moment cone separately as two 3D polytopes
   void buildWrenchConeFromContact(int numberOfFrictionSides,
-                                  std::pair<std::pair<double, double>, sva::PTransformd> & contactSurface,
+                                  std::pair<std::pair<double, double>, sva::PTransformd> contactSurface,
                                   boost::shared_ptr<Polytope_Rn> & forceCone,
                                   boost::shared_ptr<Polytope_Rn> & momentPoly,
                                   double m_frictionCoef,
@@ -136,8 +149,12 @@ struct DynamicPolytope
   };
 
   // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
-  void setCurrentContacts(std::vector<std::string> & contactNames)
+  void setCurrentContacts(const std::vector<std::string> & contactNames)
   {
+    auto waitForLock = mc_rtc::clock::now();
+    std::lock_guard<std::mutex> lock(contactSetMutex_);
+    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
+    mc_rtc::log::critical("Waited {}ms to get contact lock", lockTime.count());
     // take the previous set of contacts
     contactsToRemove_ = activeContacts_;
     activeContacts_.clear();
@@ -147,6 +164,13 @@ struct DynamicPolytope
       activeContacts_.emplace(contactName);
       // every active contact does not need to be removed
       contactsToRemove_.erase(contactName);
+    }
+    // if computation has not started yet, launch it
+    if(!computing_)
+    {
+      computing_ = true;
+      // signal main computation thread
+      cv_.notify_one();
     }
   };
 
@@ -188,17 +212,12 @@ protected:
                                     Eigen::VectorXd & Offsets);
 
   std::string name_;
+  const mc_rbdyn::Robot & robot_;
   std::set<std::string> possibleContacts_;
   std::set<std::string> activeContacts_;
   std::set<std::string> contactsToRemove_;
 
   bool withMoments_;
-
-  mc_rtc::gui::PolyhedronConfig polyForceConfig_;
-  mc_rtc::gui::PolyhedronConfig polyMomentConfig_;
-  mc_rtc::gui::PolyhedronConfig polyZMPConfig_;
-  mc_rtc::gui::PolyhedronConfig polyZeroMomentAreaConfig_;
-  double guiScale_;
 
   sva::ForceVecd robotNetWrench_;
   Eigen::Vector3d eCMP_;
@@ -217,6 +236,22 @@ protected:
   // cdd
   // std::vector<std::shared_ptr<Eigen::Polyhedron>> cddFrictionCones_;
 
+  // threading things
+  std::thread mainComputeThread_;
+  // atomic bool as condition to keep computing in loop
+  std::atomic<bool> computing_{false};
+  // condition variable to signal start of loop for main thread
+  std::condition_variable cv_;
+  std::mutex contactSetMutex_;
+  std::map<std::string, std::thread> frictionConesThreads_;
+  std::map<std::string, std::mutex> frictionConesMutexes_;
+  // this is a workaround for the fact that mutexes are not movable
+  // using this function to get the desired mutex from the name they will be created when needed
+  std::mutex & getContactMutex(const std::string & contactName)
+  {
+    return frictionConesMutexes_[contactName]; // constructs it inside the map if doesn't exist
+  }
+
   // map of polytope triangles for display
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> forceConesTrianglesMap_;
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> momentPolytopesTrianglesMap_;
@@ -225,4 +260,11 @@ protected:
   std::vector<std::array<Eigen::Vector3d, 3>> eCMPTriangles_;
   std::vector<std::array<Eigen::Vector3d, 3>> ZMPTriangles_;
   std::vector<std::array<Eigen::Vector3d, 3>> zeroMomentTriangles_;
+
+  // gui configs
+  mc_rtc::gui::PolyhedronConfig polyForceConfig_;
+  mc_rtc::gui::PolyhedronConfig polyMomentConfig_;
+  mc_rtc::gui::PolyhedronConfig polyZMPConfig_;
+  mc_rtc::gui::PolyhedronConfig polyZeroMomentAreaConfig_;
+  double guiScale_;
 };

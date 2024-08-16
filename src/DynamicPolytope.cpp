@@ -1,17 +1,22 @@
 #include "DynamicPolytope.h"
 
-DynamicPolytope::DynamicPolytope(const std::string & name, std::set<std::string> contactNames)
-: name_(name), possibleContacts_(contactNames), robotNetWrench_(sva::ForceVecd::Zero())
+DynamicPolytope::DynamicPolytope(const std::string & name,
+                                 std::set<std::string> contactNames,
+                                 const mc_rbdyn::Robot & robot)
+: name_(fmt::format("DynamicPolytope_" + name)), possibleContacts_(contactNames),
+  robotNetWrench_(sva::ForceVecd::Zero()), robot_(robot)
 {
   // Init dimension
   Rn::setDimension(3);
-  // init triangles and cones maps
+
   for(const auto contact : contactNames)
   {
+    // init triangles maps
     std::vector<std::array<Eigen::Vector3d, 3UL>> newForceTrianglesArray;
     forceConesTrianglesMap_.emplace(contact, newForceTrianglesArray);
     momentPolytopesTrianglesMap_.emplace(contact, newForceTrianglesArray);
 
+    // init cones maps
     boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
     frictionCones_.emplace(contact, newCone);
 
@@ -25,9 +30,30 @@ DynamicPolytope::DynamicPolytope(const std::string & name, std::set<std::string>
   // init zmp region and intersection with ecmp region
   zmpRegion_.reset(new Polytope_Rn());
   zeroMomentRegion_.reset(new Polytope_Rn());
+
+  // Start a computing thread that will run continuously with the internal robot and contacts updated in the controller,
+  // mutex protected
+  mainComputeThread_ = std::thread(&DynamicPolytope::computeRegions, this);
+#ifndef WIN32
+  // Lower thread priority so that it has a lesser priority than the real time thread
+  auto th_handle = mainComputeThread_.native_handle();
+  int policy = 0;
+  sched_param param{};
+  pthread_getschedparam(th_handle, &policy, &param);
+  param.sched_priority = 10;
+  if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
+  {
+    mc_rtc::log::warning("[{}] Failed to lower thread priority. If you are running on a real-time system, this might "
+                         "cause latency to the real-time loop.",
+                         name_);
+  }
+#endif
 }
 
-DynamicPolytope::~DynamicPolytope() {}
+DynamicPolytope::~DynamicPolytope()
+{
+  stopThread();
+}
 
 void DynamicPolytope::load(const mc_rtc::Configuration & config)
 {
@@ -50,17 +76,49 @@ void DynamicPolytope::load(const mc_rtc::Configuration & config)
   config("withMoments", withMoments_);
 }
 
+void DynamicPolytope::computeRegions()
+{
+  // This section allows to block main thread until cv_ signals that computation can start, then loops conditionally on
+  // the computing_ variable that will also be used for thread stopping.
+  std::mutex mutex;
+  std::unique_lock<std::mutex> lk(mutex);
+  cv_.wait(lk, [this]() -> bool { return computing_; });
+
+  while(computing_)
+  {
+    // Step 1.1: launch individual cones calculations in separate threads as they are independant
+    computeConesFromContactSet(robot_);
+
+    // XXX threadable gui triangles? or do following calculations need mutexed access to individual cones?
+
+    // Step 1.2: launch ZMP region calculation at the same time, also independant
+
+    // Step 2: wait for finished individual cones to start mink sum of the cones
+    std::lock_guard<std::mutex> lock(contactSetMutex_);
+    for(auto contactName : activeContacts_)
+    {
+      // join all friction cones threads, ie wait they finished, then erase them from the map
+      // mc_rtc::log::info("Joining {} thread and erasing it", contactName);
+      frictionConesThreads_.at(contactName).join();
+      frictionConesThreads_.erase(contactName);
+    }
+
+    // Step 3: wait for finished mink sum and ZMP region to start zero moment intersection
+  }
+}
+
 void DynamicPolytope::buildForceConeFromContact(int numberOfFrictionSides,
-                                                std::pair<std::pair<double, double>, sva::PTransformd> & contactSurface,
+                                                sva::PTransformd contactSurface,
                                                 boost::shared_ptr<Polytope_Rn> & forceCone,
+                                                std::mutex & forceConeMutex,
                                                 double m_frictionCoef,
                                                 double maxForce)
 {
   int dim = 3;
-  forceCone->reset();
+  boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
   // for now generate cone generates only the directions for the rays: we assume it is a polyhedral cone
   auto generators =
-      generatePolyhedralConeGens(numberOfFrictionSides, contactSurface.second.rotation(), m_frictionCoef, maxForce);
+      generatePolyhedralConeGens(numberOfFrictionSides, contactSurface.rotation(), m_frictionCoef, maxForce);
   // here we manipulate polytope objects so need to add origin as a generator on the polyhedral cone
   generators.emplace_back(Eigen::Vector3d::Zero());
   for(const auto g : generators)
@@ -71,15 +129,22 @@ void DynamicPolytope::buildForceConeFromContact(int numberOfFrictionSides,
     coords.insert_element(1, g.y());
     coords.insert_element(2, g.z());
     gn->setCoordinates(coords);
-    forceCone->addGenerator(gn);
+    newCone->addGenerator(gn);
     // mc_rtc::log::info("Creating cone with vertex {}", g.transpose());
   }
-  // mc_rtc::log::info("Created cone of dim {} with {} generators", new3dForceCone.dimension(),
-  //                   new3dForceCone.numberOfGenerators());
+  // update faces of the cone
+  // XXX find a way to not need face computations for mink sum
+  DoubleDescriptionFromGenerators::Compute(newCone, 1000);
+  // lock cone mutex, then reset cone pointer to newly computed cone
+  std::lock_guard<std::mutex> lock(forceConeMutex);
+  forceCone.reset();
+  forceCone = newCone;
+  // mc_rtc::log::info("Created cone of dim {} with {} generators", forceCone->dimension(),
+  //                   forceCone->numberOfGenerators());
 }
 
 void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
-                                                 std::pair<std::pair<double, double>, sva::PTransformd> & contactSurface,
+                                                 std::pair<std::pair<double, double>, sva::PTransformd> contactSurface,
                                                  boost::shared_ptr<Polytope_Rn> & forceCone,
                                                  boost::shared_ptr<Polytope_Rn> & momentPoly,
                                                  double m_frictionCoef,
@@ -87,8 +152,8 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
                                                  Eigen::Vector3d CoM)
 {
   int dim = 3;
-  forceCone->reset();
-  momentPoly->reset();
+  boost::shared_ptr<Polytope_Rn> newForcePoly(new Polytope_Rn());
+  boost::shared_ptr<Polytope_Rn> newMomentPoly(new Polytope_Rn());
   // newCone
   // for now generate cone generates only the directions for the rays: we assume it is a polyhedral cone
   auto generators =
@@ -113,7 +178,7 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
     forceCoords.insert_element(1, newForce.y());
     forceCoords.insert_element(2, newForce.z());
     forceGN->setCoordinates(forceCoords);
-    forceCone->addGenerator(forceGN);
+    newForcePoly->addGenerator(forceGN);
     for(auto p : points)
     {
       // r is the extremity point of the surface : center + offset using half dimensions (-application point in world
@@ -133,9 +198,17 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
       momentCoords.insert_element(1, newMoment.y());
       momentCoords.insert_element(2, newMoment.z());
       momentGN->setCoordinates(momentCoords);
-      momentPoly->addGenerator(momentGN);
+      newMomentPoly->addGenerator(momentGN);
     }
   }
+
+  DoubleDescriptionFromGenerators::Compute(newForcePoly, 1000);
+  DoubleDescriptionFromGenerators::Compute(newMomentPoly, 1000);
+
+  forceCone->reset();
+  forceCone = newForcePoly;
+  momentPoly->reset();
+  momentPoly = newMomentPoly;
 }
 
 void DynamicPolytope::buildActuationPolytopeFromContact(boost::shared_ptr<Polytope_Rn> & actuationPolytope)
@@ -152,33 +225,47 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
   auto nbFrictionSides = 5;
   auto maxForce = 180.;
   auto CoM = robot.com();
+  // mutex lock contacts set
+  std::lock_guard<std::mutex> lock(contactSetMutex_);
   for(const auto contactName : activeContacts_)
   {
     sva::PTransformd contactPose = robot.surfacePose(contactName);
-    double newContactHalfLength;
-    double newContactHalfWidth;
-    // find limits of contact area
-    findHalfWidthLength(robot.surface(contactName), newContactHalfWidth, newContactHalfLength);
-
-    std::pair<std::pair<double, double>, sva::PTransformd> newContact(
-        std::pair<double, double>(newContactHalfLength, newContactHalfWidth), contactPose);
     if(!withMoments_)
     {
       // update the correct cone in the map
-      buildForceConeFromContact(nbFrictionSides, newContact, frictionCones_.at(contactName), frictionCoeff, maxForce);
-      // update faces of the cone
-      // XXX find a way to not need face computations for mink sum
-      DoubleDescriptionFromGenerators::Compute(frictionCones_.at(contactName), 1000);
-      // mc_rtc::log::info("Cone for {} has {} generators and {} facets", contactName,
-      //                   frictionCones_.at(contactName)->numberOfGenerators(),
-      //                   frictionCones_.at(contactName)->numberOfHalfSpaces());
+      // launching thread and emplacing it in the threads map
+      frictionConesThreads_.emplace(contactName,
+                                    std::thread(&DynamicPolytope::buildForceConeFromContact, this, nbFrictionSides,
+                                                contactPose, std::ref(frictionCones_.at(contactName)),
+                                                std::ref(getContactMutex(contactName)), frictionCoeff, maxForce));
+#ifndef WIN32
+      // Lower thread priority so that it has a lesser priority than the real time thread
+      auto th_handle = frictionConesThreads_.at(contactName).native_handle();
+      int policy = 0;
+      sched_param param{};
+      pthread_getschedparam(th_handle, &policy, &param);
+      param.sched_priority = 10;
+      if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
+      {
+        mc_rtc::log::warning(
+            "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
+            "cause latency to the real-time loop.",
+            name_, contactName);
+      }
+#endif
     }
     else
     {
+      // find limits of contact area for moment limits
+      double newContactHalfLength;
+      double newContactHalfWidth;
+      findHalfWidthLength(robot.surface(contactName), newContactHalfWidth, newContactHalfLength);
+      std::pair<std::pair<double, double>, sva::PTransformd> newContact(
+          std::pair<double, double>(newContactHalfLength, newContactHalfWidth), contactPose);
+
+      // TODO thread moments versions as well: add moment mutex + put mutexes as arguments
       buildWrenchConeFromContact(nbFrictionSides, newContact, frictionCones_.at(contactName),
                                  frictionConesMoments_.at(contactName), frictionCoeff, maxForce, CoM);
-      DoubleDescriptionFromGenerators::Compute(frictionCones_.at(contactName), 1000);
-      DoubleDescriptionFromGenerators::Compute(frictionConesMoments_.at(contactName), 1000);
     }
   }
 }
@@ -311,6 +398,7 @@ void DynamicPolytope::computeECMP(const mc_rbdyn::Robot & robot)
 
 void DynamicPolytope::updateTrianglesGUIPolitopix()
 {
+  // std::lock_guard()
   for(const auto contact : activeContacts_)
   {
     update3DPolyTrianglesPolitopix(frictionCones_.at(contact), forceConesTrianglesMap_.at(contact), guiScale_);
