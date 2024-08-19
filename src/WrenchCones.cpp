@@ -1,4 +1,6 @@
 #include "WrenchCones.h"
+#include "eigen-quadprog/QuadProg.h"
+#include "eigen-quadprog/eigen_quadprog_api.h"
 
 // Julien's method, not convinced
 Eigen::MatrixXd linearizedFrictionCone(int numberOfFrictionSides, Eigen::Matrix3d m_rotation, double m_frictionCoef)
@@ -177,4 +179,64 @@ void findHalfWidthLength(const mc_rbdyn::Surface & surface, double & halfWidth, 
 
   halfLength = (maxSagital - minSagital) / 2.;
   halfWidth = (maxLateral - minLateral) / 2.;
+}
+
+double computeMaxNormalforce(const mc_rbdyn::Robot & r,const mc_rbdyn::Contact & c)
+{  
+  const int n_var = 6;
+  const int n_tau = r.mb().nrDof() - 6;
+  const auto & s = *(c.r1Surface());
+  std::string body;
+  std::string surface;
+  sva::PTransformd X_s_b;
+  if(r.hasSurface(c.r1Surface()->name()))
+  {
+    body = c.r1Surface()->bodyName();
+    surface = c.r1Surface()->name();  
+  }
+  else
+  {
+    body = c.r2Surface()->bodyName();
+    surface = c.r2Surface()->name();
+  }
+  X_s_b = r.bodyPosW(body) * (r.surfacePose(surface).inv());
+
+  rbd::Jacobian jac(r.mb(),
+                    body,
+                    X_s_b.inv().translation());
+  
+  Eigen::MatrixXd J = jac.bodyJacobian(r.mb(),r.mbc());
+  Eigen::MatrixXd fullJ = Eigen::MatrixXd::Zero(6,r.mb().nrDof());
+  jac.fullJacobian(r.mb(),J,fullJ);
+
+  const Eigen::MatrixXd jacT = (sva::PTransformd(X_s_b.rotation()).matrix() * fullJ).transpose()  ;
+
+  Eigen::MatrixXd Aineq(2 * n_tau,n_var);
+  Aineq.block(0,0,n_tau,n_var) = Eigen::MatrixXd::Identity(n_tau,n_tau) * jacT.block(6,0,n_tau,6);
+  Aineq.block(n_tau,0,n_tau,n_var) = -Eigen::MatrixXd::Identity(n_tau,n_tau) * jacT.block(6,0,n_tau,6);
+
+  Eigen::VectorXd bineq(Aineq.rows());
+  bineq.segment(0,n_tau) = rbd::dofToVector(r.mb(),r.tu()).segment(6,n_tau);
+  bineq.segment(n_tau,n_tau) = -rbd::dofToVector(r.mb(),r.tl()).segment(6,n_tau);
+
+
+  Eigen::QuadProgDense qp;
+  qp.problem(n_var,0,bineq.rows());
+  Eigen::Vector6d cost;
+  cost << 0,0,0,0,0,-1e6;
+  bool QPsuccess = qp.solve(Eigen::MatrixXd::Identity(n_var,n_var),
+                      cost,
+                      Eigen::MatrixXd::Zero(0,n_var),Eigen::VectorXd::Zero(0),
+                      Aineq,bineq);
+  
+  if(!QPsuccess)
+  {
+    // mc_rtc::log::error("[Max Normal force] QP failed");
+    mc_rtc::log::error("[Max Normal force] QP failed\nnvar {} ntau {} Aineq shape ({},{}) bineq shape {}",n_var,n_tau,Aineq.rows(),Aineq.cols(),bineq.rows());
+    // mc_rtc::log::error("[Max Normal force] bineq\n{}",bineq);
+
+  }
+
+  return qp.result()(5);
+
 }

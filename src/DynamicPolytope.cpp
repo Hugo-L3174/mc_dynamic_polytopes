@@ -1,4 +1,5 @@
 #include "DynamicPolytope.h"
+#include "SupportRegion.h"
 
 DynamicPolytope::DynamicPolytope(const std::string & name,
                                  std::set<std::string> contactNames,
@@ -29,6 +30,7 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 
   // init zmp region and intersection with ecmp region
   zmpRegion_.reset(new Polytope_Rn());
+  CWCMomentLessUnCstr_.reset(new Polytope_Rn());
   zeroMomentRegion_.reset(new Polytope_Rn());
 
   // Start a computing thread that will run continuously with the internal robot and contacts updated in the controller,
@@ -43,9 +45,9 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
   param.sched_priority = 10;
   if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
   {
-    mc_rtc::log::warning("[{}] Failed to lower thread priority. If you are running on a real-time system, this might "
-                         "cause latency to the real-time loop.",
-                         name_);
+    // mc_rtc::log::warning("[{}] Failed to lower thread priority. If you are running on a real-time system, this might "
+    //                      "cause latency to the real-time loop.",
+    //                      name_);
   }
 #endif
 }
@@ -78,12 +80,12 @@ void DynamicPolytope::load(const mc_rtc::Configuration & config)
 
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
 {
-  logger.addLogEntry(prefix + "dt_totalLoop", this, [this]() { return dt_loop_total().count(); });
-  logger.addLogEntry(prefix + "dt_computeContactSet", this, [this]() { return dt_contactSet().count(); });
-  logger.addLogEntry(prefix + "dt_minkSum", this, [this]() { return dt_minkSum().count(); });
-  logger.addLogEntry(prefix + "dt_updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
-  logger.addLogEntry(prefix + "dt_guiTriangles", this, [this]() { return dt_guiTriangles().count(); });
-  logger.addLogEntry(prefix + "dt_zeroMomentIntersection", this, [this]() { return dt_zeroMomentInter().count(); });
+  logger.addLogEntry(prefix + "_dt_totalLoop", this, [this]() { return dt_loop_total().count(); });
+  logger.addLogEntry(prefix + "_dt_computeContactSet", this, [this]() { return dt_contactSet().count(); });
+  logger.addLogEntry(prefix + "_dt_minkSum", this, [this]() { return dt_minkSum().count(); });
+  logger.addLogEntry(prefix + "_dt_updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
+  logger.addLogEntry(prefix + "_dt_guiTriangles", this, [this]() { return dt_guiTriangles().count(); });
+  logger.addLogEntry(prefix + "_dt_zeroMomentIntersection", this, [this]() { return dt_zeroMomentInter().count(); });
 }
 
 void DynamicPolytope::computeRegions()
@@ -99,11 +101,15 @@ void DynamicPolytope::computeRegions()
     auto start_loop = mc_rtc::clock::now();
     // Lock contact set mutex, set active contacts to be used in internal loops then unlock mutex
     setCurrentContacts();
+    setCurrentContactsName();
     // Step 1.1: launch individual cones calculations in separate threads as they are independant
     computeConesFromContactSet(robot_);
 
     // Step 1.2: launch ZMP region calculation at the same time, also independant
-    zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+    zmpThread_ = std::thread([this](){computeZMPRegion(robot_,contacts_);});
+
+    // Step 1.3: launch CWC Momentlesss calculation at the same time, also independant
+    std::thread cwcMomentLessThread = std::thread([this](){computeMomentLessForceCone(robot_,contacts_);});
 
     // Step 2: wait for finished individual cones to start mink sum of the cones
     for(auto contactName : activeContacts_)
@@ -143,6 +149,7 @@ void DynamicPolytope::computeRegions()
 
     // Step 4: wait for finished ZMP region to start zero moment intersection with eCMP region
     zmpThread_.join();
+    cwcMomentLessThread.join();
     auto start_zeroMomentIntersection = mc_rtc::clock::now();
     computeZeroMomentIntersection();
     dt_zeroMoment_intersection_ = mc_rtc::clock::now() - start_zeroMomentIntersection;
@@ -318,7 +325,6 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
       param.sched_priority = 10;
       if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
       {
-        // XXX Check if warning exists on real time kernel
         // mc_rtc::log::warning(
         //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
         //     "cause latency to the real-time loop.",
@@ -393,7 +399,7 @@ void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rb
 }
 
 void DynamicPolytope::VRPtranslation(double deltaZ)
-{
+ {
   boost::numeric::ublas::vector<double> deltaZVector(3);
   deltaZVector[0] = 0.;
   deltaZVector[1] = 0.;
@@ -401,41 +407,26 @@ void DynamicPolytope::VRPtranslation(double deltaZ)
   TopGeomTools::translate(CWCForces_, deltaZVector);
   TopGeomTools::translate(zeroMomentRegion_, deltaZVector);
 }
-
-void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
+ 
+void DynamicPolytope::computeZMPRegion(const mc_rbdyn::Robot & robot, const std::vector<mc_rbdyn::Contact> & contacts)
 {
-  // XXX dummy zone for now: convex area formed by the polygon envelope of feet + com position
+
+  const auto comPosition = robot.com();
+  const auto static_hull = static_zmp_region(robot,contacts,Eigen::Vector3d::Zero(),Eigen::Vector3d{0,0,1})[0];
   int dim = 3;
   zmpRegion_->reset();
 
-  // manually adding left foot points
-  std::vector<Eigen::Vector3d> generators;
-  auto lfPoints = robot_.surface("LeftFoot").points();
-  for(auto lfPoint : lfPoints)
+  for(auto & pt : static_hull)
   {
-    lfPoint = lfPoint * robot_.surface("LeftFoot").X_0_s(robot_);
     boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
     boost::numeric::ublas::vector<double> coords(3);
-    coords.insert_element(0, lfPoint.translation().x());
-    coords.insert_element(1, lfPoint.translation().y());
-    coords.insert_element(2, lfPoint.translation().z());
+    coords.insert_element(0, pt.x());
+    coords.insert_element(1, pt.y());
+    coords.insert_element(2, pt.z());
     gn->setCoordinates(coords);
     zmpRegion_->addGenerator(gn);
   }
 
-  // same for right foot points
-  auto rfPoints = robot_.surface("RightFoot").points();
-  for(auto rfPoint : rfPoints)
-  {
-    rfPoint = rfPoint * robot_.surface("RightFoot").X_0_s(robot_);
-    boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
-    boost::numeric::ublas::vector<double> coords(3);
-    coords.insert_element(0, rfPoint.translation().x());
-    coords.insert_element(1, rfPoint.translation().y());
-    coords.insert_element(2, rfPoint.translation().z());
-    gn->setCoordinates(coords);
-    zmpRegion_->addGenerator(gn);
-  }
 
   boost::shared_ptr<Generator_Rn> CoMgn(new Generator_Rn(dim));
   boost::numeric::ublas::vector<double> coords(3);
@@ -448,6 +439,41 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
   DoubleDescriptionFromGenerators::Compute(zmpRegion_, 1000);
 }
 
+void DynamicPolytope::computeMomentLessForceCone(const mc_rbdyn::Robot & robot, const std::vector<mc_rbdyn::Contact> & contacts)
+{
+  const Eigen::Vector3d comPosition = robot.com();
+  const std::vector<Eigen::Vector3d> rays = momentless_force_cone(robot,contacts,comPosition,Eigen::Vector3d{0,0,1});
+  int dim = 3;
+  CWCMomentLessUnCstr_->reset();
+
+  const double scale = comPosition.z() / (robot.mass() * mc_rtc::constants::GRAVITY);
+  // const double scale = 0.8;
+
+  for(auto & r : rays)
+  {
+    const Eigen::Vector3d pt = comPosition - r * scale;
+    boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
+    boost::numeric::ublas::vector<double> coords(3);
+    coords.insert_element(0, pt.x());
+    coords.insert_element(1, pt.y());
+    coords.insert_element(2, pt.z());
+    gn->setCoordinates(coords);
+    CWCMomentLessUnCstr_->addGenerator(gn);
+  }
+
+
+  boost::shared_ptr<Generator_Rn> CoMgn(new Generator_Rn(dim));
+  boost::numeric::ublas::vector<double> coords(3);
+  coords.insert_element(0, comPosition.x());
+  coords.insert_element(1, comPosition.y());
+  coords.insert_element(2, comPosition.z());
+  CoMgn->setCoordinates(coords);
+  CWCMomentLessUnCstr_->addGenerator(CoMgn);
+
+  DoubleDescriptionFromGenerators::Compute(CWCMomentLessUnCstr_, 1000);
+}
+
+
 void DynamicPolytope::computeZeroMomentIntersection()
 {
   zeroMomentRegion_->reset();
@@ -456,7 +482,7 @@ void DynamicPolytope::computeZeroMomentIntersection()
   politopixAPI::copyPolytope(CWCForces_, zeroMomentRegion_);
 
   // politopixAPI::computeIntersection(CWCForces_, zmpRegion_, zeroMomentRegion_);
-  politopixAPI::computeIntersectionWithoutCheck(zeroMomentRegion_, zmpRegion_);
+  politopixAPI::computeIntersectionWithoutCheck(zeroMomentRegion_, CWCMomentLessUnCstr_);
 }
 
 void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)
@@ -598,6 +624,10 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
     update3DPolyTrianglesPolitopix(zmpRegion_, ZMPTriangles_, 1);
     ZMPTrianglesMutex_.unlock();
 
+    CWCMomentLessUnCstrTrianglesMutex_.lock();
+    update3DPolyTrianglesPolitopix(CWCMomentLessUnCstr_, CWCMomentLessUnCstrTriangles_, 1);
+    CWCMomentLessUnCstrTrianglesMutex_.unlock();
+
     zeroMomentTrianglesMutex_.lock();
     update3DPolyTrianglesPolitopix(zeroMomentRegion_, zeroMomentTriangles_, 1);
     zeroMomentTrianglesMutex_.unlock();
@@ -622,6 +652,10 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
     zeroMomentTrianglesMutex_.lock();
     zeroMomentTriangles_.clear();
     zeroMomentTrianglesMutex_.unlock();
+
+    CWCMomentLessUnCstrTrianglesMutex_.lock();
+    CWCMomentLessUnCstrTriangles_.clear();
+    CWCMomentLessUnCstrTrianglesMutex_.unlock();
 
     if(withMoments_)
     {
@@ -674,6 +708,7 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
       this, CWCCat,
       mc_rtc::gui::Polyhedron("CWC forces", polyForceConfig_, [this]() { return getCWCForceTriangles(); }),
       mc_rtc::gui::Polyhedron("CWC moments", polyMomentConfig_, [this]() { return getCWCMomentTriangles(); }),
+      mc_rtc::gui::Polyhedron("CWC moments uncstr", polyMomentConfig_, [this]() { return getCWCMomentLess(); }),
       mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [this]() { return getZMPTriangles(); }),
       mc_rtc::gui::Polyhedron("Zero moment region", polyZeroMomentAreaConfig_,
                               [this]() { return getZeroMomentTriangles(); }));
