@@ -1,8 +1,8 @@
 #include "GUIComputations.h"
 
 void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
-                                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles,
-                                                     double guiScale)
+                                    std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles,
+                                    double guiScale)
 {
   // XXX CAREFUL here we fill a triangles list: this assumes we are in 3d (because each facet has dim vertices in a
   // polytope) BUT this means if we actually manipulate a 6d space the faces will be hexagons? can we assume the
@@ -91,9 +91,9 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
 }
 
 void update6DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
-                                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultMomentTriangles,
-                                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultForceTriangles,
-                                                     double guiScale)
+                                    std::vector<std::array<Eigen::Vector3d, 3>> & resultMomentTriangles,
+                                    std::vector<std::array<Eigen::Vector3d, 3>> & resultForceTriangles,
+                                    double guiScale)
 {
   resultMomentTriangles.clear();
   resultForceTriangles.clear();

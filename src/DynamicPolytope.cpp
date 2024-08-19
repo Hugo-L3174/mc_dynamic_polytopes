@@ -174,7 +174,7 @@ void DynamicPolytope::buildForceConeFromContact(int numberOfFrictionSides,
     // mc_rtc::log::info("Creating cone with vertex {}", g.transpose());
   }
   // update faces of the cone
-  // XXX find a way to not need face computations for mink sum
+  // The face computations are necessary for the minkowsky sum using normal fans
   DoubleDescriptionFromGenerators::Compute(newCone, 1000);
   // lock cone mutex, then reset cone pointer to newly computed cone
   std::lock_guard<std::mutex> lock(forceConeMutex);
@@ -224,7 +224,6 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
     {
       // r is the extremity point of the surface : center + offset using half dimensions (-application point in world
       // to get desired frame)
-      // XXX see if application point is ok here?
       Eigen::Vector3d r = contactSurface.second.translation() + p - CoM;
 
       // here compute the generators using the "limits" of the surface contact (points r) and associate each generator
@@ -288,10 +287,11 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
       param.sched_priority = 10;
       if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
       {
-        mc_rtc::log::warning(
-            "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
-            "cause latency to the real-time loop.",
-            name_, contactName);
+        // XXX Check if warning exists on real time kernel
+        // mc_rtc::log::warning(
+        //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
+        //     "cause latency to the real-time loop.",
+        //     name_, contactName);
       }
 #endif
     }
@@ -426,7 +426,7 @@ void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d comPosition, const mc
   // TODO change coords from varignon (check) + check that corresponds to inside of eCMP region?
 }
 
-void DynamicPolytope::computeECMP(const mc_rbdyn::Robot & robot)
+Eigen::Vector3d DynamicPolytope::computeECMP(const mc_rbdyn::Robot & robot)
 {
   std::vector<std::string> contactsFSensors;
   for(auto fsensor : robot.forceSensors())
@@ -435,6 +435,7 @@ void DynamicPolytope::computeECMP(const mc_rbdyn::Robot & robot)
   }
   robotNetWrench_ = robot.netWrench(contactsFSensors);
   eCMP_ = robot.com() - (robot.com().z()) / (robot.mass() * 9.81) * robotNetWrench_.force();
+  return eCMP_;
 }
 
 void DynamicPolytope::updateTrianglesGUIPolitopix()

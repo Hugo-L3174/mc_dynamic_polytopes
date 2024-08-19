@@ -32,13 +32,6 @@ struct DynamicPolytope
     mainComputeThread_.join();
   }
 
-  // main computation function that calls all region calculations in sequence
-  // intended to be called in a thread, and will thread region calculations correctly
-  void computeRegions();
-
-  // Updates the internal maps of triangles for gui display for the given contact names
-  void updateTrianglesGUIPolitopix();
-
   // Set current contact set to be used for next computation
   void setControllerContacts(const std::vector<std::string> & contactNames)
   {
@@ -56,14 +49,25 @@ struct DynamicPolytope
     }
   }
 
+  // Set the use of moments for computations
   void setWithMoments(bool withMoments)
   {
     withMoments_ = withMoments;
   };
 
-  void computeECMP(const mc_rbdyn::Robot & robot);
+  Eigen::Vector3d computeECMP(const mc_rbdyn::Robot & robot);
 
-  // ------------------------------------------------------> Computation functions
+  // ------------------------------------------------------> mc_rtc interface functions
+
+  void load(const mc_rtc::Configuration & config);
+  void addToGUI(mc_rtc::gui::StateBuilder & gui,
+                double guiScale,
+                std::vector<std::string> category = {"DynamicPolytopes"});
+  void removeFromGUI(mc_rtc::gui::StateBuilder & gui);
+  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes_");
+  void removeFromLogger(mc_rtc::Logger & logger);
+
+  // ------------------------------------------------------> public computation functions
 
   // compute the contact force cone into a 3D polytope
   void buildForceConeFromContact(int numberOfFrictionSides,
@@ -87,6 +91,37 @@ struct DynamicPolytope
   // think about how to compute bounds if jac non diagonal (redundancy): orso2018ral says QP? or LP?
   // also if not considering zero vel and acc how to use inertia matrix elements
   void buildActuationPolytopeFromContact(boost::shared_ptr<Polytope_Rn> & actuationPolytope);
+
+  // ------------------------------------------------------> Plane constraints getters
+
+  // Returns the internal normals matrix and offsets vector of the eCMP region for QP constraint or check
+  void getECMPPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  {
+    std::lock_guard<std::mutex> lock(eCMPPlanesMutex_);
+    Normals.resize(eCMPNormals_.rows(), 3);
+    Offsets.resize(eCMPOffsets_.size());
+    Normals = eCMPNormals_;
+    Offsets = eCMPOffsets_;
+  };
+
+  // Returns the internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
+  // constraint or check
+  void getZeroMomentPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  {
+    std::lock_guard<std::mutex> lock(zeroMomentPlanesMutex_);
+    Normals.resize(zeroMomentNormals_.rows(), 3);
+    Offsets.resize(zeroMomentOffsets_.size());
+    Normals = zeroMomentNormals_;
+    Offsets = zeroMomentOffsets_;
+  };
+
+protected:
+  // main computation function that calls all region calculations in sequence
+  // intended to be called in a thread, and will thread region calculations correctly
+  void computeRegions();
+
+  // Updates the internal maps of triangles for gui display for the given contact names
+  void updateTrianglesGUIPolitopix();
 
   /* computes all cones from the surfaces with the given names (set by setCurrentContacts), reset the pointers of the
   map and updates the H-description of the poly using the double description algorithm.
@@ -127,16 +162,33 @@ struct DynamicPolytope
   // Might be unnecessary, heavy algorithm to remove unnecessary faces
   void computeResultHull();
 
-  // ------------------------------------------------------> mc_rtc interface functions
-  void load(const mc_rtc::Configuration & config);
-  void addToGUI(mc_rtc::gui::StateBuilder & gui,
-                double guiScale,
-                std::vector<std::string> category = {"DynamicPolytopes"});
-  void removeFromGUI(mc_rtc::gui::StateBuilder & gui);
-  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes_");
-  void removeFromLogger(mc_rtc::Logger & logger);
+  // Puts the H representation of the given polytope into a matrix (normals) and a vector (offsets) for easy
+  // testing/constraining
+  void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
+                                    Eigen::MatrixX3d & Normals,
+                                    Eigen::VectorXd & Offsets);
+
+  // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
+  void setCurrentContacts()
+  {
+    auto waitForLock = mc_rtc::clock::now();
+    std::lock_guard<std::mutex> lock(contactSetMutex_);
+    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
+    // mc_rtc::log::critical("Region compute thread waited {}ms to get contact lock", lockTime.count());
+    // take the previous set of contacts
+    contactsToRemove_ = activeContacts_;
+    activeContacts_.clear();
+    for(const auto contactName : controllerContacts_)
+    {
+      // add every contact given to the active contacts
+      activeContacts_.emplace(contactName);
+      // every active contact does not need to be removed
+      contactsToRemove_.erase(contactName);
+    }
+  };
 
   // ------------------------------------------------------> Timing functions
+
   inline mc_rtc::duration_ms dt_loop_total() const noexcept
   {
     return dt_loop_total_;
@@ -168,6 +220,7 @@ struct DynamicPolytope
   }
 
   // ------------------------------------------------------> GUI getters
+
   std::vector<std::array<Eigen::Vector3d, 3>> getForceConesTriangles(const std::string & name)
   {
     std::lock_guard<std::mutex> lock(getContactMutex(forceConeTrianglesMutexes_, name));
@@ -209,53 +262,7 @@ struct DynamicPolytope
     return zeroMomentTriangles_;
   };
 
-  // ------------------------------------------------------> Other getters
-  // Returns the internal normals matrix and offsets vector of the eCMP region for QP constraint or check
-  void getECMPPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
-  {
-    std::lock_guard<std::mutex> lock(eCMPPlanesMutex_);
-    Normals.resize(eCMPNormals_.rows(), 3);
-    Offsets.resize(eCMPOffsets_.size());
-    Normals = eCMPNormals_;
-    Offsets = eCMPOffsets_;
-  };
-
-  // Returns the internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
-  // constraint or check
-  void getZeroMomentPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
-  {
-    std::lock_guard<std::mutex> lock(zeroMomentPlanesMutex_);
-    Normals.resize(zeroMomentNormals_.rows(), 3);
-    Offsets.resize(zeroMomentOffsets_.size());
-    Normals = zeroMomentNormals_;
-    Offsets = zeroMomentOffsets_;
-  };
-
-protected:
-  // Puts the H representation of the given polytope into a matrix (normals) and a vector (offsets) for easy
-  // testing/constraining
-  void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
-                                    Eigen::MatrixX3d & Normals,
-                                    Eigen::VectorXd & Offsets);
-
-  // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
-  void setCurrentContacts()
-  {
-    auto waitForLock = mc_rtc::clock::now();
-    std::lock_guard<std::mutex> lock(contactSetMutex_);
-    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
-    // mc_rtc::log::critical("Region compute thread waited {}ms to get contact lock", lockTime.count());
-    // take the previous set of contacts
-    contactsToRemove_ = activeContacts_;
-    activeContacts_.clear();
-    for(const auto contactName : controllerContacts_)
-    {
-      // add every contact given to the active contacts
-      activeContacts_.emplace(contactName);
-      // every active contact does not need to be removed
-      contactsToRemove_.erase(contactName);
-    }
-  };
+  // ------------------------------------------------------> Internal variables
 
   std::string name_;
   const mc_rbdyn::Robot & robot_;

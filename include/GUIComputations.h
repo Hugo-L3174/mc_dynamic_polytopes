@@ -3,7 +3,6 @@
 #include <mc_rtc/gui.h>
 #include <politopix/politopixAPI.h>
 
-
 // Updates the faces vector used for polytope display
 void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles,
