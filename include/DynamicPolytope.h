@@ -158,6 +158,9 @@ protected:
   */
   void computeZeroMomentIntersection();
 
+  // Translates the eCMP region and the zero-moment region with a vertical Delta z offset to get actual DCM region
+  void VRPtranslation(double deltaZ);
+
   // Computes the convex hull of the CWC_ polytope
   // Might be unnecessary, heavy algorithm to remove unnecessary faces
   void computeResultHull();

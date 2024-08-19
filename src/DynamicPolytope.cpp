@@ -122,12 +122,6 @@ void DynamicPolytope::computeRegions()
     // Step 3: wait for finished mink sum to convert to eCMP region (no thread needed)
     dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
     computeECMPRegion(robot_.com(), robot_);
-    // Update eCMP planes internal variables to be fetched by controller
-    auto start_updatePlanes = mc_rtc::clock::now();
-    eCMPPlanesMutex_.lock();
-    updatePlanesMatrixConstraint(CWCForces_, eCMPNormals_, eCMPOffsets_);
-    eCMPPlanesMutex_.unlock();
-    dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
 
     // Step 4: wait for finished ZMP region to start zero moment intersection with eCMP region
     zmpThread_.join();
@@ -135,10 +129,20 @@ void DynamicPolytope::computeRegions()
     computeZeroMomentIntersection();
     dt_zeroMoment_intersection_ = mc_rtc::clock::now() - start_zeroMomentIntersection;
 
+    // Step 5: translate eCMP region and zero-moment intersection to get VRP regions
+    VRPtranslation(robot_.com().z());
+
+    // Update eCMP (now VRP) planes internal variables to be fetched by controller
+    auto start_updatePlanes = mc_rtc::clock::now();
+    eCMPPlanesMutex_.lock();
+    updatePlanesMatrixConstraint(CWCForces_, eCMPNormals_, eCMPOffsets_);
+    eCMPPlanesMutex_.unlock();
+
     // Update zero moment region planes to be fetched by controller
     zeroMomentPlanesMutex_.lock();
     updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentNormals_, zeroMomentOffsets_);
     zeroMomentPlanesMutex_.unlock();
+    dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
 
     // Step 5: gui computations
     auto start_guiTriangles = mc_rtc::clock::now();
@@ -345,7 +349,6 @@ void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rb
   // scale force polytope by - Deltaz/mg
   double scale = -comPosition.z() / (robot.mass() * 9.81);
   bool ok = TopGeomTools::scalingFactor(CWCForces_, scale);
-  // CWCForces_->negate();
   // then translate it from origin to the robot CoM
   boost::numeric::ublas::vector<double> CoM(3);
   CoM[0] = comPosition.x();
@@ -356,6 +359,16 @@ void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rb
   // CoM[0] = 0.;
   // CoM[1] = 0.;
   // TopGeomTools::translate(CWCForces_, CoM);
+}
+
+void DynamicPolytope::VRPtranslation(double deltaZ)
+{
+  boost::numeric::ublas::vector<double> deltaZVector(3);
+  deltaZVector[0] = 0.;
+  deltaZVector[1] = 0.;
+  deltaZVector[2] = deltaZ;
+  TopGeomTools::translate(CWCForces_, deltaZVector);
+  TopGeomTools::translate(zeroMomentRegion_, deltaZVector);
 }
 
 void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)

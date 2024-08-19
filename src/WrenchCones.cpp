@@ -31,7 +31,7 @@ Eigen::MatrixXd linearizedFrictionCone(int numberOfFrictionSides, Eigen::Matrix3
 std::vector<Eigen::Vector3d> generatePolyhedralConeGens(int numberOfFrictionSides,
                                                         Eigen::Matrix3d m_rotation,
                                                         double m_frictionCoef,
-                                                        double scale)
+                                                        double maxForce)
 {
   std::vector<Eigen::Vector3d> generators(numberOfFrictionSides);
   // here unit vector, but can be capped for cone?
@@ -41,13 +41,16 @@ std::vector<Eigen::Vector3d> generatePolyhedralConeGens(int numberOfFrictionSide
 
   // gen is the max tangential axis tolerated around the normal of the contact, deduced from the friction coeff
   Eigen::Vector3d gen = Eigen::AngleAxisd(angle, tan) * normal;
-  // step is the scale decomposition (precition) with which to compute the actual cone (linearization)
+  // XXX as we cheat for now and build a polytope instead of a polyhedral cone, we scale the generating vector to have a
+  // normal value of maxForce
+  gen *= (maxForce / gen.z());
+  // step is the scale decomposition (precision) with which to compute the actual cone (linearization)
   double step = (M_PI * 2.) / numberOfFrictionSides;
 
   for(unsigned int i = 0; i < numberOfFrictionSides; ++i)
   {
     // each generator is formed by the limit points of the linearized cone around the contact normal
-    generators[i] = m_rotation.transpose() * Eigen::AngleAxisd(step * i, normal) * gen * scale;
+    generators[i] = m_rotation.transpose() * Eigen::AngleAxisd(step * i, normal) * gen;
     // mc_rtc::log::info("generator {} of this cone is {}", i, generators[i].transpose());
   }
   return generators;
