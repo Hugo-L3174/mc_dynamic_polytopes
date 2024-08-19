@@ -36,6 +36,7 @@ find_package(polito REQUIRED)
 
 add_library(DynamicPolytope SHARED
   ${PROJECT_SOURCE_DIR}/src/WrenchCones.cpp
+  ${PROJECT_SOURCE_DIR}/src/GUIComputations.cpp
   ${PROJECT_SOURCE_DIR}/src/DynamicPolytope.cpp
 )
 

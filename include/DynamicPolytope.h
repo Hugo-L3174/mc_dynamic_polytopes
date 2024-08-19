@@ -10,6 +10,7 @@
 #include <mc_rtc/clock.h>
 #include <mc_rtc/gui.h>
 
+#include "GUIComputations.h"
 #include "WrenchCones.h"
 
 #include <politopix/PolyhedralAlgorithms_Rn.h>
@@ -34,6 +35,35 @@ struct DynamicPolytope
   // main computation function that calls all region calculations in sequence
   // intended to be called in a thread, and will thread region calculations correctly
   void computeRegions();
+
+  // Updates the internal maps of triangles for gui display for the given contact names
+  void updateTrianglesGUIPolitopix();
+
+  // Set current contact set to be used for next computation
+  void setControllerContacts(const std::vector<std::string> & contactNames)
+  {
+    auto waitForLock = mc_rtc::clock::now();
+    std::lock_guard<std::mutex> lock(contactSetMutex_);
+    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
+    // mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
+    controllerContacts_ = contactNames;
+    // if computation has not started yet, launch it
+    if(!computing_)
+    {
+      computing_ = true;
+      // signal main computation thread
+      cv_.notify_one();
+    }
+  }
+
+  void setWithMoments(bool withMoments)
+  {
+    withMoments_ = withMoments;
+  };
+
+  void computeECMP(const mc_rbdyn::Robot & robot);
+
+  // ------------------------------------------------------> Computation functions
 
   // compute the contact force cone into a 3D polytope
   void buildForceConeFromContact(int numberOfFrictionSides,
@@ -97,30 +127,47 @@ struct DynamicPolytope
   // Might be unnecessary, heavy algorithm to remove unnecessary faces
   void computeResultHull();
 
-  // Updates the internal maps of triangles for gui display for the given contact names
-  void updateTrianglesGUIPolitopix();
+  // ------------------------------------------------------> mc_rtc interface functions
+  void load(const mc_rtc::Configuration & config);
+  void addToGUI(mc_rtc::gui::StateBuilder & gui,
+                double guiScale,
+                std::vector<std::string> category = {"DynamicPolytopes"});
+  void removeFromGUI(mc_rtc::gui::StateBuilder & gui);
+  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes_");
+  void removeFromLogger(mc_rtc::Logger & logger);
 
-  // Returns the internal normals matrix and offsets vector of the eCMP region for QP constraint or check
-  void getECMPPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  // ------------------------------------------------------> Timing functions
+  inline mc_rtc::duration_ms dt_loop_total() const noexcept
   {
-    std::lock_guard<std::mutex> lock(eCMPPlanesMutex_);
-    Normals.resize(eCMPNormals_.rows(), 3);
-    Offsets.resize(eCMPOffsets_.size());
-    Normals = eCMPNormals_;
-    Offsets = eCMPOffsets_;
-  };
+    return dt_loop_total_;
+  }
 
-  // Returns the internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
-  // constraint or check
-  void getZeroMomentPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  inline mc_rtc::duration_ms dt_contactSet() const noexcept
   {
-    std::lock_guard<std::mutex> lock(zeroMomentPlanesMutex_);
-    Normals.resize(zeroMomentNormals_.rows(), 3);
-    Offsets.resize(zeroMomentOffsets_.size());
-    Normals = zeroMomentNormals_;
-    Offsets = zeroMomentOffsets_;
-  };
+    return dt_compute_contactSet_;
+  }
 
+  inline mc_rtc::duration_ms dt_minkSum() const noexcept
+  {
+    return dt_compute_minkSum_;
+  }
+
+  inline mc_rtc::duration_ms dt_updatePlanes() const noexcept
+  {
+    return dt_update_planes_;
+  }
+
+  inline mc_rtc::duration_ms dt_guiTriangles() const noexcept
+  {
+    return dt_compute_guiTriangles_;
+  }
+
+  inline mc_rtc::duration_ms dt_zeroMomentInter() const noexcept
+  {
+    return dt_zeroMoment_intersection_;
+  }
+
+  // ------------------------------------------------------> GUI getters
   std::vector<std::array<Eigen::Vector3d, 3>> getForceConesTriangles(const std::string & name)
   {
     std::lock_guard<std::mutex> lock(getContactMutex(forceConeTrianglesMutexes_, name));
@@ -162,84 +209,29 @@ struct DynamicPolytope
     return zeroMomentTriangles_;
   };
 
-  // Set current contact set to be used for next computation
-  void setControllerContacts(const std::vector<std::string> & contactNames)
+  // ------------------------------------------------------> Other getters
+  // Returns the internal normals matrix and offsets vector of the eCMP region for QP constraint or check
+  void getECMPPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
   {
-    auto waitForLock = mc_rtc::clock::now();
-    std::lock_guard<std::mutex> lock(contactSetMutex_);
-    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
-    // mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
-    controllerContacts_ = contactNames;
-    // if computation has not started yet, launch it
-    if(!computing_)
-    {
-      computing_ = true;
-      // signal main computation thread
-      cv_.notify_one();
-    }
-  }
-
-  void setWithMoments(bool withMoments)
-  {
-    withMoments_ = withMoments;
+    std::lock_guard<std::mutex> lock(eCMPPlanesMutex_);
+    Normals.resize(eCMPNormals_.rows(), 3);
+    Offsets.resize(eCMPOffsets_.size());
+    Normals = eCMPNormals_;
+    Offsets = eCMPOffsets_;
   };
 
-  void computeECMP(const mc_rbdyn::Robot & robot);
-
-  void load(const mc_rtc::Configuration & config);
-  void addToGUI(mc_rtc::gui::StateBuilder & gui,
-                double guiScale,
-                std::vector<std::string> category = {"DynamicPolytopes"});
-  void removeFromGUI(mc_rtc::gui::StateBuilder & gui);
-  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes_");
-  void removeFromLogger(mc_rtc::Logger & logger);
-
-  inline mc_rtc::duration_ms dt_loop_total() const noexcept
+  // Returns the internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
+  // constraint or check
+  void getZeroMomentPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
   {
-    return dt_loop_total_;
-  }
-
-  inline mc_rtc::duration_ms dt_contactSet() const noexcept
-  {
-    return dt_compute_contactSet_;
-  }
-
-  inline mc_rtc::duration_ms dt_minkSum() const noexcept
-  {
-    return dt_compute_minkSum_;
-  }
-
-  inline mc_rtc::duration_ms dt_updatePlanes() const noexcept
-  {
-    return dt_update_planes_;
-  }
-
-  inline mc_rtc::duration_ms dt_guiTriangles() const noexcept
-  {
-    return dt_compute_guiTriangles_;
-  }
-
-  inline mc_rtc::duration_ms dt_zeroMomentInter() const noexcept
-  {
-    return dt_zeroMoment_intersection_;
-  }
+    std::lock_guard<std::mutex> lock(zeroMomentPlanesMutex_);
+    Normals.resize(zeroMomentNormals_.rows(), 3);
+    Offsets.resize(zeroMomentOffsets_.size());
+    Normals = zeroMomentNormals_;
+    Offsets = zeroMomentOffsets_;
+  };
 
 protected:
-  // Updates the faces vector used for polytope display (internal function)
-  void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
-                                      std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles,
-                                      double guiScale);
-
-  void update6DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
-                                      std::vector<std::array<Eigen::Vector3d, 3>> & resultMomentTriangles,
-                                      std::vector<std::array<Eigen::Vector3d, 3>> & resultForceTriangles,
-                                      double guiScale);
-
-  void clearTriangles(std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles)
-  {
-    resultTriangles.clear();
-  };
-
   // Puts the H representation of the given polytope into a matrix (normals) and a vector (offsets) for easy
   // testing/constraining
   void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
