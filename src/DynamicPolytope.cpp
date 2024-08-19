@@ -427,14 +427,16 @@ void DynamicPolytope::computeZMPRegion(const mc_rbdyn::Robot & robot, const std:
     zmpRegion_->addGenerator(gn);
   }
 
-
-  boost::shared_ptr<Generator_Rn> CoMgn(new Generator_Rn(dim));
-  boost::numeric::ublas::vector<double> coords(3);
-  coords.insert_element(0, comPosition.x());
-  coords.insert_element(1, comPosition.y());
-  coords.insert_element(2, comPosition.z());
-  CoMgn->setCoordinates(coords);
-  zmpRegion_->addGenerator(CoMgn);
+  for(auto & pt : static_hull)
+  {
+    boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
+    boost::numeric::ublas::vector<double> coords(3);
+    coords.insert_element(0, pt.x());
+    coords.insert_element(1, pt.y());
+    coords.insert_element(2, pt.z() + 2);
+    gn->setCoordinates(coords);
+    zmpRegion_->addGenerator(gn);
+  }
 
   DoubleDescriptionFromGenerators::Compute(zmpRegion_, 1000);
 }
