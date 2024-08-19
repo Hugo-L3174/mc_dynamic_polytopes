@@ -100,51 +100,65 @@ struct DynamicPolytope
   // Updates the internal maps of triangles for gui display for the given contact names
   void updateTrianglesGUIPolitopix();
 
-  // Updates the given normals matrix and offsets vector of the eCMP region for QP constraint or check
-  void updateECMPPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  // Returns the internal normals matrix and offsets vector of the eCMP region for QP constraint or check
+  void getECMPPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
   {
-    updatePlanesMatrixConstraint(CWCForces_, Normals, Offsets);
+    std::lock_guard<std::mutex> lock(eCMPPlanesMutex_);
+    Normals.resize(eCMPNormals_.rows(), 3);
+    Offsets.resize(eCMPOffsets_.size());
+    Normals = eCMPNormals_;
+    Offsets = eCMPOffsets_;
   };
 
-  // Updates the given normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
+  // Returns the internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
   // constraint or check
-  void updateZeroMomentPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  void getZeroMomentPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
   {
-    updatePlanesMatrixConstraint(zeroMomentRegion_, Normals, Offsets);
+    std::lock_guard<std::mutex> lock(zeroMomentPlanesMutex_);
+    Normals.resize(zeroMomentNormals_.rows(), 3);
+    Offsets.resize(zeroMomentOffsets_.size());
+    Normals = zeroMomentNormals_;
+    Offsets = zeroMomentOffsets_;
   };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getForceConesTriangles(const std::string & name)
   {
+    std::lock_guard<std::mutex> lock(getContactMutex(forceConeTrianglesMutexes_, name));
     return forceConesTrianglesMap_.at(name);
   };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getContactMomentTriangles(const std::string & name)
   {
+    std::lock_guard<std::mutex> lock(getContactMutex(momentTrianglesMutexes_, name));
     return momentPolytopesTrianglesMap_.at(name);
   };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getCWCForceTriangles()
   {
+    std::lock_guard<std::mutex> lock(CWCForceTrianglesMutex_);
     return CWCForceTriangles_;
   };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getCWCMomentTriangles()
   {
+    std::lock_guard<std::mutex> lock(CWCMomentTrianglesMutex_);
     return CWCMomentTriangles_;
   };
 
-  std::vector<std::array<Eigen::Vector3d, 3>> getECMPTriangles()
-  {
-    return eCMPTriangles_;
-  };
+  // std::vector<std::array<Eigen::Vector3d, 3>> getECMPTriangles()
+  // {
+  //   return eCMPTriangles_;
+  // };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getZMPTriangles()
   {
+    std::lock_guard<std::mutex> lock(ZMPTrianglesMutex_);
     return ZMPTriangles_;
   };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getZeroMomentTriangles()
   {
+    std::lock_guard<std::mutex> lock(zeroMomentTrianglesMutex_);
     return zeroMomentTriangles_;
   };
 
@@ -154,7 +168,7 @@ struct DynamicPolytope
     auto waitForLock = mc_rtc::clock::now();
     std::lock_guard<std::mutex> lock(contactSetMutex_);
     mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
-    mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
+    // mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
     controllerContacts_ = contactNames;
     // if computation has not started yet, launch it
     if(!computing_)
@@ -205,6 +219,11 @@ struct DynamicPolytope
     return dt_compute_guiTriangles_;
   }
 
+  inline mc_rtc::duration_ms dt_zeroMomentInter() const noexcept
+  {
+    return dt_zeroMoment_intersection_;
+  }
+
 protected:
   // Updates the faces vector used for polytope display (internal function)
   void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
@@ -233,7 +252,7 @@ protected:
     auto waitForLock = mc_rtc::clock::now();
     std::lock_guard<std::mutex> lock(contactSetMutex_);
     mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
-    mc_rtc::log::critical("Region compute thread waited {}ms to get contact lock", lockTime.count());
+    // mc_rtc::log::critical("Region compute thread waited {}ms to get contact lock", lockTime.count());
     // take the previous set of contacts
     contactsToRemove_ = activeContacts_;
     activeContacts_.clear();
@@ -283,12 +302,29 @@ protected:
   std::mutex contactSetMutex_;
   std::map<std::string, std::thread> frictionConesThreads_;
   std::map<std::string, std::mutex> frictionConesMutexes_;
+  std::thread zmpThread_;
+  std::mutex eCMPPlanesMutex_;
+  std::mutex zeroMomentPlanesMutex_;
   // this is a workaround for the fact that mutexes are not movable
   // using this function to get the desired mutex from the name they will be created when needed
-  std::mutex & getContactMutex(const std::string & contactName)
+  std::mutex & getContactMutex(std::map<std::string, std::mutex> & mutexMap, const std::string & contactName)
   {
-    return frictionConesMutexes_[contactName]; // constructs it inside the map if doesn't exist
+    return mutexMap[contactName]; // constructs it inside the map if doesn't exist
   }
+  // gui mutexes
+  std::map<std::string, std::mutex> forceConeTrianglesMutexes_;
+  std::map<std::string, std::mutex> momentTrianglesMutexes_;
+  std::mutex CWCForceTrianglesMutex_;
+  std::mutex CWCMomentTrianglesMutex_;
+  std::mutex ZMPTrianglesMutex_;
+  std::mutex zeroMomentTrianglesMutex_;
+
+  // Internal matrices of planes and offsets of the regions for constraints
+  Eigen::MatrixX3d eCMPNormals_;
+  Eigen::VectorXd eCMPOffsets_;
+
+  Eigen::MatrixX3d zeroMomentNormals_;
+  Eigen::VectorXd zeroMomentOffsets_;
 
   // timers to measure computation times
   mc_rtc::duration_ms dt_loop_total_;
@@ -296,6 +332,7 @@ protected:
   mc_rtc::duration_ms dt_compute_minkSum_;
   mc_rtc::duration_ms dt_update_planes_;
   mc_rtc::duration_ms dt_compute_guiTriangles_;
+  mc_rtc::duration_ms dt_zeroMoment_intersection_;
 
   // map of polytope triangles for display
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> forceConesTrianglesMap_;

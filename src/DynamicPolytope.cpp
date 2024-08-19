@@ -83,6 +83,7 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & p
   logger.addLogEntry(prefix + "dt_minkSum", this, [this]() { return dt_minkSum().count(); });
   logger.addLogEntry(prefix + "dt_updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
   logger.addLogEntry(prefix + "dt_guiTriangles", this, [this]() { return dt_guiTriangles().count(); });
+  logger.addLogEntry(prefix + "dt_zeroMomentIntersection", this, [this]() { return dt_zeroMomentInter().count(); });
 }
 
 void DynamicPolytope::computeRegions()
@@ -93,13 +94,6 @@ void DynamicPolytope::computeRegions()
   std::unique_lock<std::mutex> lk(mutex);
   cv_.wait(lk, [this]() -> bool { return computing_; });
 
-  // DCMPoly_->computeZeroMomentIntersection();
-  // DCMPoly_->computeMomentsRegion(robot().com(), robot());
-
-  // DCMPoly_->updateECMPPlanes(eCMPPlanesNormals_, eCMPPlanesOffsets_);
-
-  // DCMPoly_->updateTrianglesGUIPolitopix();
-
   while(computing_)
   {
     auto start_loop = mc_rtc::clock::now();
@@ -108,10 +102,8 @@ void DynamicPolytope::computeRegions()
     // Step 1.1: launch individual cones calculations in separate threads as they are independant
     computeConesFromContactSet(robot_);
 
-    // XXX threadable gui triangles? or do following calculations need mutexed access to individual cones?
-
     // Step 1.2: launch ZMP region calculation at the same time, also independant
-    // zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+    zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
 
     // Step 2: wait for finished individual cones to start mink sum of the cones
     for(auto contactName : activeContacts_)
@@ -125,17 +117,30 @@ void DynamicPolytope::computeRegions()
 
     // All friction cones computed, start minkowsky sum computation
     auto start_minkSum = mc_rtc::clock::now();
-    // computeMinkowskySumPolitopix();
+    computeMinkowskySumPolitopix();
 
     // Step 3: wait for finished mink sum to convert to eCMP region (no thread needed)
     dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
-    // computeECMPRegion(robot_.com(), robot_);
+    computeECMPRegion(robot_.com(), robot_);
+    // Update eCMP planes internal variables to be fetched by controller
+    auto start_updatePlanes = mc_rtc::clock::now();
+    eCMPPlanesMutex_.lock();
+    updatePlanesMatrixConstraint(CWCForces_, eCMPNormals_, eCMPOffsets_);
+    eCMPPlanesMutex_.unlock();
+    dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
 
-    // Step 3: wait for finished ZMP region to start zero moment intersection with eCMP region
-    // zmpThread_.join()
-    // computeZeroMomentIntersection();
+    // Step 4: wait for finished ZMP region to start zero moment intersection with eCMP region
+    zmpThread_.join();
+    auto start_zeroMomentIntersection = mc_rtc::clock::now();
+    computeZeroMomentIntersection();
+    dt_zeroMoment_intersection_ = mc_rtc::clock::now() - start_zeroMomentIntersection;
 
-    // XXX FOR NOW Step 4: gui computations
+    // Update zero moment region planes to be fetched by controller
+    zeroMomentPlanesMutex_.lock();
+    updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentNormals_, zeroMomentOffsets_);
+    zeroMomentPlanesMutex_.unlock();
+
+    // Step 5: gui computations
     auto start_guiTriangles = mc_rtc::clock::now();
     updateTrianglesGUIPolitopix();
     dt_compute_guiTriangles_ = mc_rtc::clock::now() - start_guiTriangles;
@@ -272,7 +277,8 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
       frictionConesThreads_.emplace(contactName,
                                     std::thread(&DynamicPolytope::buildForceConeFromContact, this, nbFrictionSides,
                                                 contactPose, std::ref(frictionCones_.at(contactName)),
-                                                std::ref(getContactMutex(contactName)), frictionCoeff, maxForce));
+                                                std::ref(getContactMutex(frictionConesMutexes_, contactName)),
+                                                frictionCoeff, maxForce));
 #ifndef WIN32
       // Lower thread priority so that it has a lesser priority than the real time thread
       auto th_handle = frictionConesThreads_.at(contactName).native_handle();
@@ -433,22 +439,29 @@ void DynamicPolytope::computeECMP(const mc_rbdyn::Robot & robot)
 
 void DynamicPolytope::updateTrianglesGUIPolitopix()
 {
-  // std::lock_guard()
   for(const auto contact : activeContacts_)
   {
+    getContactMutex(forceConeTrianglesMutexes_, contact).lock();
     update3DPolyTrianglesPolitopix(frictionCones_.at(contact), forceConesTrianglesMap_.at(contact), guiScale_);
+    getContactMutex(forceConeTrianglesMutexes_, contact).unlock();
     if(withMoments_)
     {
+      getContactMutex(momentTrianglesMutexes_, contact).lock();
       update3DPolyTrianglesPolitopix(frictionConesMoments_.at(contact), momentPolytopesTrianglesMap_.at(contact),
                                      guiScale_);
+      getContactMutex(momentTrianglesMutexes_, contact).unlock();
     }
   }
   for(const auto contact : contactsToRemove_)
   {
+    getContactMutex(forceConeTrianglesMutexes_, contact).lock();
     clearTriangles(forceConesTrianglesMap_.at(contact));
+    getContactMutex(forceConeTrianglesMutexes_, contact).unlock();
     if(withMoments_)
     {
+      getContactMutex(momentTrianglesMutexes_, contact).lock();
       clearTriangles(momentPolytopesTrianglesMap_.at(contact));
+      getContactMutex(momentTrianglesMutexes_, contact).unlock();
     }
   }
 
@@ -456,25 +469,41 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
   {
     // gui scale for CWC should be 1, it is position space and not force space (because eCMP)
     // update6DPolyTrianglesPolitopix(CWC_, CWCMomentTriangles_, CWCForceTriangles_, guiScale_);
+    CWCForceTrianglesMutex_.lock();
     update3DPolyTrianglesPolitopix(CWCForces_, CWCForceTriangles_, 1);
+    CWCForceTrianglesMutex_.unlock();
     // mc_rtc::log::info("force triangle is of size {}", CWCForceTriangles_.size());
     // scale 1 here: already position space
+    ZMPTrianglesMutex_.lock();
     update3DPolyTrianglesPolitopix(zmpRegion_, ZMPTriangles_, 1);
+    ZMPTrianglesMutex_.unlock();
+    zeroMomentTrianglesMutex_.lock();
     update3DPolyTrianglesPolitopix(zeroMomentRegion_, zeroMomentTriangles_, 1);
+    zeroMomentTrianglesMutex_.unlock();
 
     if(withMoments_)
     {
+      CWCMomentTrianglesMutex_.lock();
       update3DPolyTrianglesPolitopix(CWCMoments_, CWCMomentTriangles_, guiScale_);
+      CWCMomentTrianglesMutex_.unlock();
     }
   }
   else
   {
+    CWCForceTrianglesMutex_.lock();
     clearTriangles(CWCForceTriangles_);
+    CWCForceTrianglesMutex_.unlock();
+    ZMPTrianglesMutex_.lock();
     clearTriangles(ZMPTriangles_);
+    ZMPTrianglesMutex_.unlock();
+    zeroMomentTrianglesMutex_.lock();
     clearTriangles(zeroMomentTriangles_);
+    zeroMomentTrianglesMutex_.unlock();
     if(withMoments_)
     {
+      CWCMomentTrianglesMutex_.lock();
       clearTriangles(CWCMomentTriangles_);
+      CWCMomentTrianglesMutex_.unlock();
     }
   }
 }
