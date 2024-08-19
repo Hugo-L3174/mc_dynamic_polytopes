@@ -1,5 +1,9 @@
 #pragma once
 #include <mc_control/fsm/Controller.h>
+#include <eigen3/Eigen/Dense>
+#include <RBDyn/Jacobian.h>
+#include <mc_rbdyn/Robot.h>
+
 
 Eigen::MatrixXd linearizedFrictionCone(int numberOfFrictionSides, Eigen::Matrix3d m_rotation, double m_frictionCoef);
 
@@ -50,3 +54,5 @@ Eigen::Matrix3d skewMatrix(const Eigen::Vector3d v);
 
 // This function is inspired by the lipm stabilizer contact instanciation
 void findHalfWidthLength(const mc_rbdyn::Surface & surface, double & halfWidth, double & halfLength);
+
+double computeMaxNormalforce(const mc_rbdyn::Robot & r, const mc_rbdyn::Contact & c);

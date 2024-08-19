@@ -19,7 +19,6 @@ find_package(polito REQUIRED)
 # for cdd computations if any
 # find_package(eigen-cdd REQUIRED)
 
-
 # add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
 # target_include_directories(${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<INSTALL_INTERFACE:include>)
 # set_target_properties(${PROJECT_NAME} PROPERTIES COMPILE_FLAGS "-DEIGEN_CDDLIB_EXPORTS")
@@ -38,6 +37,7 @@ add_library(DynamicPolytope SHARED
   ${PROJECT_SOURCE_DIR}/src/WrenchCones.cpp
   ${PROJECT_SOURCE_DIR}/src/GUIComputations.cpp
   ${PROJECT_SOURCE_DIR}/src/DynamicPolytope.cpp
+  ${PROJECT_SOURCE_DIR}/src/SupportRegion.cpp
 )
 
 target_include_directories(DynamicPolytope
@@ -54,7 +54,9 @@ target_link_libraries(DynamicPolytope
   mc_rtc::mc_control_fsm
   polito
   # eigen-cdd::eigen-cdd
+  eigen-quadprog::eigen-quadprog
 )
+
 
 #### Exporting targets and installing ####
 
