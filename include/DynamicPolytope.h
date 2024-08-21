@@ -115,6 +115,11 @@ struct DynamicPolytope
     Offsets = zeroMomentOffsets_;
   };
 
+  // Projects the given point on the VRP region. Returns the given point if it is already inside
+  Eigen::Vector3d projectPointInVRPRegion(Eigen::Vector3d testedPoint);
+
+  Eigen::Vector3d projectPointInZeroMomentRegion(Eigen::Vector3d testedPoint);
+
 protected:
   // main computation function that calls all region calculations in sequence
   // intended to be called in a thread, and will thread region calculations correctly
@@ -166,7 +171,8 @@ protected:
   void computeResultHull();
 
   // Puts the H representation of the given polytope into a matrix (normals) and a vector (offsets) for easy
-  // testing/constraining
+  // testing/constraining. /!\ politopix convention has normals towards the inside, so we negate them again to return
+  // them in usual convention (normals towards exterior)
   void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
                                     Eigen::MatrixX3d & Normals,
                                     Eigen::VectorXd & Offsets);
@@ -189,6 +195,11 @@ protected:
       contactsToRemove_.erase(contactName);
     }
   };
+
+  Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
+
+  // sanity check
+  bool checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn> & polytope);
 
   // ------------------------------------------------------> Timing functions
 

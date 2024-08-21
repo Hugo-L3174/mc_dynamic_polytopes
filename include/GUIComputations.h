@@ -13,3 +13,5 @@ void update6DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultMomentTriangles,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultForceTriangles,
                                     double guiScale);
+
+void sortFaceVertices(std::vector<Eigen::Vector3d> & vertices, Eigen::Vector3d faceNormal);

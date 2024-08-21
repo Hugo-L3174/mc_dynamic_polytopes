@@ -1,5 +1,47 @@
 #include "GUIComputations.h"
 
+void sortFaceVertices(std::vector<Eigen::Vector3d> & vertices, Eigen::Vector3d faceNormal)
+{
+  // Choose first point as reference
+  Eigen::Vector3d reference = vertices[0];
+  // Find a basis for the face plane to project the points in 2d on it
+  Eigen::Vector3d basis1 = (vertices[1] - vertices[0]).normalized();
+  Eigen::Vector3d basis2 = faceNormal.cross(basis1).normalized();
+
+  // lambda to project on the 2d plane
+  auto projectTo2D = [&basis1, &basis2, &reference](const Eigen::Vector3d & point) -> Eigen::Vector2d
+  {
+    Eigen::Vector3d p = point - reference;
+    return Eigen::Vector2d(p.dot(basis1), p.dot(basis2));
+  };
+  // lambda to compare angles
+  auto comparePolarAngles = [&](Eigen::Vector3d p1, Eigen::Vector3d p2, const Eigen::Vector3d reference) -> bool
+  {
+    Eigen::Vector2d proj1 = projectTo2D(p1);
+    Eigen::Vector2d proj2 = projectTo2D(p2);
+
+    Eigen::Vector2d refProj = projectTo2D(reference);
+    Eigen::Vector2d v1 = proj1 - refProj;
+    Eigen::Vector2d v2 = proj2 - refProj;
+
+    double crossProduct = v1.x() * v2.y() - v1.y() * v2.x();
+
+    if(crossProduct == 0)
+    {
+      // if colinear, sort from distance to reference
+      return (v1.squaredNorm()) < (v2.squaredNorm());
+    }
+
+    // otherwise sort from cross product sign
+    return crossProduct > 0;
+  };
+
+  // sort from angle order compared to the initial point
+  std::sort(vertices.begin(), vertices.end(),
+            [&](const Eigen::Vector3d & p1, const Eigen::Vector3d & p2)
+            { return comparePolarAngles(p1, p2, reference); });
+}
+
 void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles,
                                     double guiScale)
@@ -15,7 +57,6 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
 
   // For each half space in the polytope, get the generators that compose it
   constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> halfSpaceIter(polytope->getListOfHalfSpaces());
-  constIteratorOfListOfGeometricObjects<boost::shared_ptr<Generator_Rn>> generatorIter(polytope->getListOfGenerators());
 
   // get a point that we know is inside the polytope to compute the faces normals
   boost::numeric::ublas::vector<double> insidePoint(Rn::getDimension());
@@ -28,33 +69,33 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
   // recast it in eigen for practical reasons
   Eigen::Vector3d inside(insidePoint[0], insidePoint[1], insidePoint[2]);
 
-  // This fills the list with vectors of the ids of the generators that compose each face (used for debug message)
-  // std::vector<std::vector<unsigned int>> listOfGeneratorsPerFacet;
-  // polytope->getGeneratorsPerFacet(listOfGeneratorsPerFacet);
+  // This fills the list with vectors of the ids of the generators that compose each face
+  std::vector<std::vector<unsigned int>> listOfGeneratorsPerFacet;
+  polytope->getGeneratorsPerFacet(listOfGeneratorsPerFacet);
 
   for(halfSpaceIter.begin(); halfSpaceIter.end() != true; halfSpaceIter.next())
   {
+    // get the vector of the indexes of this face's generators
+    ListOfFaces listOfFacetVertices = listOfGeneratorsPerFacet.at(halfSpaceIter.currentIteratorNumber());
     // mc_rtc::log::info("Face index is {}, it has {} generators", halfSpaceIter.currentIteratorNumber(),
-    //                   listOfGeneratorsPerFacet.at(halfSpaceIter.currentIteratorNumber()).size());
-    std::vector<Eigen::Vector3d> vertices;
-    for(generatorIter.begin(); generatorIter.end() != true; generatorIter.next())
-    {
+    //                   listOfFacetVertices.size());
 
-      // each generator has several facets, so iterate his facets until finding the current one
-      for(size_t i = 0; i < generatorIter.current()->numberOfFacets(); i++)
-      {
-        if(generatorIter.current()->getFacet(i) == halfSpaceIter.current())
-        {
-          // mc_rtc::log::info("Generator {} belongs to face {}, adding it.", generatorIter.currentIteratorNumber(),
-          // halfSpaceIter.currentIteratorNumber());
-          // This generator is one of the current halfspace vertex
-          Eigen::Vector3d vertex(generatorIter.current()->getCoordinate(0), generatorIter.current()->getCoordinate(1),
-                                 generatorIter.current()->getCoordinate(2));
-          vertices.push_back(vertex * guiScale);
-          // mc_rtc::log::info("Vertex coords: {}", vertex.transpose());
-        }
-      }
+    std::vector<Eigen::Vector3d> vertices;
+
+    // get vertices coordinates of this face to build the triangles composing it
+    for(int faceGens = 0; faceGens < listOfFacetVertices.size(); faceGens++)
+    {
+      int generatorIndex = listOfFacetVertices.at(faceGens);
+      // mc_rtc::log::info("Generator {} belongs to face {}, adding it.", generatorIndex,
+      //                   halfSpaceIter.currentIteratorNumber());
+      // This generator is one of the current halfspace vertex
+      Eigen::Vector3d vertex(polytope->getGenerator(generatorIndex)->getCoordinate(0),
+                             polytope->getGenerator(generatorIndex)->getCoordinate(1),
+                             polytope->getGenerator(generatorIndex)->getCoordinate(2));
+      vertices.push_back(vertex * guiScale);
+      // mc_rtc::log::info("Vertex coords: {}", vertex.transpose());
     }
+
     /* we got all vertices of the face in vertices vector, now order them for triangle array, ie order vertices so that
     the normal is towards the exterior
     We don't necessarily have only 3 vertices for this face! if not, more calculations are necessary to decompose
@@ -64,15 +105,27 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     */
     auto nbVertices = vertices.size();
     // mc_rtc::log::info("There are {} vertices", nbVertices);
-    // XXX add nb<3 condition bc nbVerctices -2 can be negative (degen faces) and with condition on negative int is
-    // evaluated to true
-    for(auto i = 0; (i < nbVertices - 2) && nbVertices >= 3; i++)
+    // ordering the vertices
+    Eigen::Vector3d hsNormal(halfSpaceIter.current()->getCoefficient(0), halfSpaceIter.current()->getCoefficient(1),
+                             halfSpaceIter.current()->getCoefficient(2));
+    hsNormal.normalize();
+    sortFaceVertices(vertices, hsNormal);
+
+    // add nbVertices<3 condition because nbVertices -2 can be negative (degen faces) and with condition on negative int
+    // is evaluated to true
+    for(auto i = 0; (i < nbVertices - 2) && (nbVertices >= 3); i++)
     {
       // mc_rtc::log::info("Making a triangle with vertices {}, {} and {}", 0, i+1, i+2);
       // make a triangle with vertices 0, i+1, i+2 and orient and emplace it normally
       Eigen::Vector3d faceNormal;
       faceNormal = (vertices.at(i + 1) - vertices.at(0)).cross(vertices.at(i + 2) - vertices.at(0));
+      // faceNormal *= -1.0;
       faceNormal.normalize();
+      // mc_rtc::log::info("computed normal is {}", faceNormal);
+      Eigen::Vector3d hsNormal(halfSpaceIter.current()->getCoefficient(0), halfSpaceIter.current()->getCoefficient(1),
+                               halfSpaceIter.current()->getCoefficient(2));
+      hsNormal.normalize();
+      // mc_rtc::log::info("hsNormal is {}", hsNormal);
 
       auto faceOffset = halfSpaceIter.current()->getConstant();
 

@@ -119,9 +119,27 @@ void DynamicPolytope::computeRegions()
     auto start_minkSum = mc_rtc::clock::now();
     computeMinkowskySumPolitopix();
 
+    // if(checkGravityCenterInPolytope(CWCForces_))
+    // {
+    //   mc_rtc::log::info("Gravity center in mink region ok");
+    // }
+    // else
+    // {
+    //   mc_rtc::log::critical("Did not get gravity center inside mink with both");
+    // }
+
     // Step 3: wait for finished mink sum to convert to eCMP region (no thread needed)
     dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
     computeECMPRegion(robot_.com(), robot_);
+
+    // if(checkGravityCenterInPolytope(CWCForces_))
+    // {
+    //   mc_rtc::log::info("Gravity center in eCMP region ok");
+    // }
+    // else
+    // {
+    //   mc_rtc::log::critical("Did not get gravity center inside eCMP with both");
+    // }
 
     // Step 4: wait for finished ZMP region to start zero moment intersection with eCMP region
     zmpThread_.join();
@@ -143,6 +161,15 @@ void DynamicPolytope::computeRegions()
     updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentNormals_, zeroMomentOffsets_);
     zeroMomentPlanesMutex_.unlock();
     dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
+
+    // if(checkGravityCenterInPolytope(CWCForces_))
+    // {
+    //   mc_rtc::log::info("Gravity center in VRP region ok");
+    // }
+    // else
+    // {
+    //   mc_rtc::log::critical("Did not get gravity center inside VRP with both");
+    // }
 
     // Step 5: gui computations
     auto start_guiTriangles = mc_rtc::clock::now();
@@ -267,7 +294,7 @@ void DynamicPolytope::computeConesFromContactSet(const mc_rbdyn::Robot & robot)
   Rn::setDimension(3);
   auto frictionCoeff = 0.7;
   auto nbFrictionSides = 5;
-  auto maxForce = 180.;
+  auto maxForce = 250.;
   auto CoM = robot.com();
 
   for(const auto contactName : activeContacts_)
@@ -344,21 +371,25 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
 
 void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)
 {
-  // First we scale the force polytope according to the eCMP expression:
-  // eCMP = c - sumF/(m*(g/Dz)) --> eCMP = c - sumF*(Dz/mg)
-  // scale force polytope by - Deltaz/mg
-  double scale = -comPosition.z() / (robot.mass() * 9.81);
+  /* We want to scale the force polytope according to the eCMP expression:
+  eCMP = c - sumF/(m*(g/Dz)) --> eCMP = c - sumF*(Dz/mg)
+  --> scale force polytope by - Deltaz/mg */
+
+  // Several steps needed to mirror the polytope correctly (including the planes orientations):
+
+  // First we scale with the POSITIVE scale because scaling only modifies the HS offsets, not their normals so the
+  // polytope would be inverted but the planes inside out
+  double scale = comPosition.z() / (robot.mass() * 9.81);
   bool ok = TopGeomTools::scalingFactor(CWCForces_, scale);
-  // then translate it from origin to the robot CoM
+  // Then we negate the polytope to mirror the generators and the normals correctly
+  CWCForces_->negate();
+
+  // Finally translate it from origin to the robot CoM to get eCMP region
   boost::numeric::ublas::vector<double> CoM(3);
   CoM[0] = comPosition.x();
   CoM[1] = comPosition.y();
   CoM[2] = comPosition.z();
   TopGeomTools::translate(CWCForces_, CoM);
-  // add Delta Z for VRP
-  // CoM[0] = 0.;
-  // CoM[1] = 0.;
-  // TopGeomTools::translate(CWCForces_, CoM);
 }
 
 void DynamicPolytope::VRPtranslation(double deltaZ)
@@ -451,6 +482,80 @@ Eigen::Vector3d DynamicPolytope::computeECMP(const mc_rbdyn::Robot & robot)
   return eCMP_;
 }
 
+// Eigen::Vector3d projectPointInVRPRegion(Eigen::Vector3d testedPoint)
+// {
+//   constIteratorOfListOfGeometricObjects< boost::shared_ptr<Generator_Rn> > iteGN(CWCForces_->getListOfGenerators());
+//   for (iteGN.begin(); iteGN.end()!=true; iteGN.next()) {
+//     for (unsigned int j=0; j<iteGN.current()->numberOfFacets(); j++) {
+//       boost::shared_ptr<HalfSpace_Rn> HS = iteGN.current()->getFacet(j);
+//       boost::numeric::ublas::vector<double> projectedPoint;
+//       double halfSpaceNorm = norm_2(HS->vect());
+//       double disPoint2Hyp = HS->computeDistancePointHyperplane(iteGN.current()->vect(), projectedPoint,
+//       halfSpaceNorm);
+//       //std::cout << "d" << iteGN.currentIteratorNumber() << " = " << disPoint2Hyp << std::endl;
+//       if (disPoint2Hyp > 0.25*TOL || disPoint2Hyp < -0.25*TOL)
+//         isVeryClose = false;
+//     }
+//     if (isVeryClose == false) {
+//       averagePoint /= iteGN.current()->numberOfFacets();
+//       iteGN.current()->setCoordinates(averagePoint);
+//     }
+//   }
+// }
+
+// Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope)
+// {
+//   boost::numeric::ublas::vector<double> closestProjectedPoint;
+//   constIteratorOfListOfGeometricObjects< boost::shared_ptr<Generator_Rn> > iteGN(polytope->getListOfGenerators());
+//   for (iteGN.begin(); iteGN.end()!=true; iteGN.next()) {
+//     for (unsigned int j=0; j<iteGN.current()->numberOfFacets(); j++) {
+//       boost::shared_ptr<HalfSpace_Rn> HS = iteGN.current()->getFacet(j);
+//       boost::numeric::ublas::vector<double> projectedPoint;
+//       double halfSpaceNorm = norm_2(HS->vect());
+//       double disPoint2Hyp = HS->computeDistancePointHyperplane(iteGN.current()->vect(), projectedPoint,
+//       halfSpaceNorm);
+//       //std::cout << "d" << iteGN.currentIteratorNumber() << " = " << disPoint2Hyp << std::endl;
+//       if (disPoint2Hyp > 0.25*TOL || disPoint2Hyp < -0.25*TOL)
+//         isVeryClose = false;
+//     }
+//     if (isVeryClose == false) {
+//       averagePoint /= iteGN.current()->numberOfFacets();
+//       iteGN.current()->setCoordinates(averagePoint);
+//     }
+//   }
+//   return
+// }
+
+bool DynamicPolytope::checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn> & polytope)
+{
+  boost::numeric::ublas::vector<double> gravCenter(3);
+  TopGeomTools::gravityCenter(polytope, gravCenter);
+  Point_Rn testPoint(gravCenter(0), gravCenter(1), gravCenter(2));
+
+  int resultPolito = polytope->checkPoint(testPoint);
+  bool retResultPolitopix = false;
+  if(resultPolito == 1)
+  {
+    retResultPolitopix = true;
+  }
+
+  Eigen::MatrixX3d Normals;
+  Eigen::VectorXd Offsets;
+  updatePlanesMatrixConstraint(polytope, Normals, Offsets);
+  Eigen::Vector3d testEigen(gravCenter(0), gravCenter(1), gravCenter(2));
+  Eigen::VectorXd test = Normals * testEigen - Offsets;
+  bool retResultEigen = true;
+  for(int coeff = 0; coeff < test.size(); coeff++)
+  {
+    if(test(coeff) > 0.0)
+    {
+      retResultEigen = false;
+    }
+  }
+
+  return retResultPolitopix && retResultEigen;
+}
+
 void DynamicPolytope::updateTrianglesGUIPolitopix()
 {
   for(const auto contact : activeContacts_)
@@ -540,8 +645,9 @@ void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polyt
   for(int halfSpaceIndex = 0; halfSpaceIndex < nbOfPlanes; halfSpaceIndex++)
   {
     const auto halfSpace = polytope->getHalfSpace(halfSpaceIndex);
-    Normals.row(halfSpaceIndex) << halfSpace->getCoefficient(0), halfSpace->getCoefficient(1),
-        halfSpace->getCoefficient(2);
+    // pushing back inverted normals
+    Normals.row(halfSpaceIndex) << -halfSpace->getCoefficient(0), -halfSpace->getCoefficient(1),
+        -halfSpace->getCoefficient(2);
     Offsets(halfSpaceIndex) = halfSpace->getConstant();
   }
 }
