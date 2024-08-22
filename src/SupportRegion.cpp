@@ -55,6 +55,8 @@ const Eigen::VectorXd compute_force_limit_LP(bool & QPsuccess,
    * 
    */
   Eigen::Matrix3Xd Mpz(3,n_lbd);
+
+  //In this case, the total force is known, we pre compute the projection w.r.t plane_n
   const double sigma = plane_n.dot(target_force) ;
     
   //In this case, the total force is known, we pre compute the projection w.r.t plane_n
@@ -77,7 +79,6 @@ const Eigen::VectorXd compute_force_limit_LP(bool & QPsuccess,
 
 
   const auto t_s_lp = std::chrono::high_resolution_clock::now();
-  // qp.solve();
   QPsuccess = qp.solve(1e-6 * Eigen::MatrixXd::Identity(n_lbd,n_lbd),
                         Mpz.transpose() * v,
                         Aeq,beq,
@@ -238,7 +239,7 @@ void project_contact_cone(const mc_rbdyn::Robot & r,
   //vertice is a PTransform from parent body frame to vertice
   for (auto & vertice : contact_pts)
   {
- 
+    
     //Express vertice in world frame
     const Eigen::Vector3d vertice_0 = (vertice * X_0_b).translation();
 

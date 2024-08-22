@@ -18,7 +18,7 @@ struct ContactProjection
     std::vector<Eigen::Vector3d> pts; //Interseciton between force span and plane
     std::vector<Eigen::Vector3d> f; //span
     double max_f;
-    Eigen::Vector3d contact_n;
+    Eigen::Vector3d contact_n; //contact normal
 
 };
 
