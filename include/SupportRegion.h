@@ -15,15 +15,23 @@ struct ContactProjection
     std::vector<Eigen::Vector3d *> neg_pts;
     std::vector<Eigen::Vector3d *> pos_f;
     std::vector<Eigen::Vector3d *> neg_f;
-    std::vector<Eigen::Vector3d> pts;
-    std::vector<Eigen::Vector3d> f;
+    std::vector<Eigen::Vector3d> pts; //Interseciton between force span and plane
+    std::vector<Eigen::Vector3d> f; //span
     double max_f;
-    Eigen::Vector3d contact_n;
+    Eigen::Vector3d contact_n; //contact normal
 
 };
 
 
-
+/**
+ * @brief 
+ * 
+ * @param robot 
+ * @param contacts 
+ * @param plane_p  point in plane
+ * @param plane_n  plane normal
+ * @return std::vector<std::vector<Eigen::Vector3d>> hull representing static region
+ */
 std::vector<std::vector<Eigen::Vector3d>> static_zmp_region(const mc_rbdyn::Robot & robot,
                                                               const std::vector<mc_rbdyn::Contact> & contacts,
                                                               const Eigen::Vector3d & plane_p,

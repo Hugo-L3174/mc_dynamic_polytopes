@@ -1,9 +1,8 @@
 #include "../include/SupportRegion.h"
 #include <thread>         // std::thread
 #include <chrono>
-#include "eigen-quadprog/QuadProg.h"
-#include "eigen-quadprog/eigen_quadprog_api.h"
-#include <proxsuite/proxqp/dense/dense.hpp>
+#include <eigen-quadprog/QuadProg.h>
+#include <eigen-quadprog/eigen_quadprog_api.h>
 #include <type_traits>
 #include "WrenchCones.h"
 
@@ -14,6 +13,17 @@ std::vector<Eigen::Vector3d> concatenate_vectors(const std::vector<Eigen::Vector
     return pts;
 }
 
+/**
+ * @brief 
+ * 
+ * @param QPsuccess 
+ * @param pz projection of contacts through the span representation on the plane
+ * @param fs span representation of contacts
+ * @param v ray of LP
+ * @param plane_n plane normal
+ * @param target_force commonly a vertical force
+ * @return const Eigen::VectorXd 
+ */
 const Eigen::VectorXd compute_force_limit_LP(bool & QPsuccess,
                                           const std::vector<Eigen::Vector3d> & pz,
                                           const std::vector<Eigen::Vector3d> & fs,
@@ -24,11 +34,29 @@ const Eigen::VectorXd compute_force_limit_LP(bool & QPsuccess,
   const auto t_s_ilp = std::chrono::high_resolution_clock::now();
   assert(pz.size() == fs.size());
   
-  const int n_lbd = fs.size();
-  Eigen::Matrix4Xd Aeq(4,n_lbd);
+  const int n_lbd = fs.size(); //nb of variables
+
+
+
+  /**
+   * Inequality cstr are that decision var are positive
+   * 
+   *
+   * Equality cstr are
+   * The resulting force is target_force
+   * The moment around plane_n is 0
+   */
+  Eigen::Matrix4Xd Aeq(4,n_lbd); 
 
   Eigen::Vector4d beq = {target_force.x(),target_force.y(),target_force.z() ,0};
+
+  /**
+   * Mpz is the matrix thatt computes the ZMP w.r.t the decision variables
+   * 
+   */
   Eigen::Matrix3Xd Mpz(3,n_lbd);
+
+  //In this case, the total force is known, we pre compute the projection w.r.t plane_n
   const double sigma = plane_n.dot(target_force) ;
   for (int i = 0 ; i < n_lbd ; i++)
   {
@@ -49,11 +77,10 @@ const Eigen::VectorXd compute_force_limit_LP(bool & QPsuccess,
 
 
   const auto t_s_lp = std::chrono::high_resolution_clock::now();
-  // qp.solve();
   QPsuccess = qp.solve(1e-6 * Eigen::MatrixXd::Identity(n_lbd,n_lbd),
-                      Mpz.transpose() * v,
-                      Aeq,beq,
-                      -Eigen::MatrixXd::Identity(n_lbd,n_lbd),Eigen::VectorXd::Zero(n_lbd));
+                        Mpz.transpose() * v,
+                        Aeq,beq,
+                        -Eigen::MatrixXd::Identity(n_lbd,n_lbd),Eigen::VectorXd::Zero(n_lbd));
   const auto t_e_lp = std::chrono::high_resolution_clock::now();
   const auto dur = std::chrono::duration_cast<std::chrono::microseconds>(t_e_lp - t_s_lp).count();
   // mc_rtc::log::success("lp sol {} us",dur);
@@ -115,7 +142,7 @@ const Eigen::Vector3d compute_cmp_cone_LP(bool & QPsuccess,
   qp.problem(n_lbd,beq.rows(),bineq.rows());
 
   QPsuccess = qp.solve(1e-8 * Eigen::MatrixXd::Identity(n_lbd,n_lbd),
-                      ray_mat.transpose() * v - 10 * sigma_vec,
+                      ray_mat.transpose() * v ,
                       Aeq,beq,
                       Aineq,bineq);
 
@@ -158,13 +185,14 @@ void project_ray( ContactProjection & c_proj,
                   const Eigen::Vector3d & ray)
 {
   const double n_dot_f = c_proj.plane_n.dot(ray);
+  //If the ray is parallel to the plane, stop
   if( n_dot_f == 0)
   {
     return;
   }
-  const Eigen::Vector3d p = c_proj.plane_p + (c_proj.plane_n.cross( (cone_pt - c_proj.plane_p).cross(ray) )/n_dot_f);
+  const Eigen::Vector3d proj = c_proj.plane_p + (c_proj.plane_n.cross( (cone_pt - c_proj.plane_p).cross(ray) )/n_dot_f);
 
-  c_proj.pts.push_back(p);
+  c_proj.pts.push_back(proj);
   c_proj.f.push_back(ray);
 
   if(n_dot_f >=0)
@@ -190,6 +218,7 @@ void project_contact_cone(const mc_rbdyn::Robot & r,
 
   c_proj.max_f = computeMaxNormalforce(r,contact);
 
+  //Check is robot surface is surface 1 or 2
   if(r.hasSurface(contact.r1Surface()->name()))
   {
     X_0_b = r.bodyPosW(contact.r1Surface()->bodyName()) ;
@@ -201,33 +230,37 @@ void project_contact_cone(const mc_rbdyn::Robot & r,
     X_0_b = r.bodyPosW(contact.r2Surface()->bodyName());
   }
 
+  //Rotation matrix of contact frame in world frame
   const Eigen::Matrix3d R_c_0 = (contact.X_b_s() * X_0_b).rotation().transpose() ;
   c_proj.contact_n = R_c_0.col(2).normalized();
 
-  for (auto & pt : contact_pts)
+  //vertice is a PTransform from parent body frame to vertice
+  for (auto & vertice : contact_pts)
   {
- 
-    const Eigen::Vector3d pt_0 = (pt * X_0_b).translation();
+    
+    //Express vertice in world frame
+    const Eigen::Vector3d vertice_0 = (vertice * X_0_b).translation();
 
     std::vector<Eigen::Vector3d> force_span;
-    if(std::is_same_v<decltype(&mc_rbdyn::Contact::force_span), void (mc_rbdyn::Contact::*)()>)
+    // if(std::is_same_v<decltype(&mc_rbdyn::Contact::force_span), void (mc_rbdyn::Contact::*)()>)
+    // {
+    //   force_span = contact.force_span();
+    // }
+    // else
+    // {
+    //compute span rays in contact frame
+    for (int i = 0 ; i < contact.nrConeGen ; i++)
     {
-      force_span = contact.force_span();
+      const auto R = sva::RotZ(2 * 3.14 * ( ((double) i) / 4.));
+      force_span.push_back( (R * Eigen::Vector3d{contact.friction()/sqrt(2),contact.friction()/sqrt(2),1}).normalized() );
     }
-    else
-    {
-      for (int i = 0 ; i < 4 ; i++)
-      {
-        const auto R = mc_rbdyn::rpyToMat(Eigen::Vector3d{0,0, 2 * 3.14 * ( ((double) i) / 4.)});
-        force_span.push_back( (R * Eigen::Vector3d{contact.friction()/sqrt(2),contact.friction()/sqrt(2),1}).normalized() );
-      }
-    }
+    // }
 
     for (auto & fc : force_span)
     {
 
       const Eigen::Vector3d f = (R_c_0 * fc);
-      project_ray(c_proj,pt_0,f);
+      project_ray(c_proj,vertice_0,f);
     
     }
   }
@@ -263,8 +296,8 @@ std::vector<std::vector<Eigen::Vector3d>> static_zmp_region(const mc_rbdyn::Robo
   const ContactProjection c_proj = contact_projection(robot,contacts,plane_p,plane_n);
 
 
-  std::vector<Eigen::Vector3d> pts_statics;
-  const int n_ray = 15;
+  std::vector<Eigen::Vector3d> pts_statics; // Hull of the static zmp region
+  const int n_ray = 15; //nb of LP to be done
   pts_statics.resize(n_ray);
   const auto & pts = c_proj.pts;
   const auto & f = c_proj.f;
