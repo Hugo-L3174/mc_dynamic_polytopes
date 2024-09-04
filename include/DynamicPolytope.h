@@ -19,6 +19,8 @@
 
 // #include <eigen-cdd/Polyhedron.h>
 
+using HRepX3d = std::pair<Eigen::MatrixX3d, Eigen::VectorXd>;
+
 struct DynamicPolytope
 {
   DynamicPolytope(const std::string & name, std::set<std::string> contactNames, const mc_rbdyn::Robot & robot);
@@ -113,6 +115,14 @@ struct DynamicPolytope
     Offsets.resize(zeroMomentOffsets_.size());
     Normals = zeroMomentNormals_;
     Offsets = zeroMomentOffsets_;
+  };
+
+  // Returns the desired cone H representation
+  // Given by copy here, might be dangerous by const ref because of threading computation
+  const HRepX3d getConePlanes(const std::string & contactName)
+  {
+    std::lock_guard<std::mutex> lock(getContactMutex(frictionConesPlanesMutexes_, contactName));
+    return frictionConesPlanes_.at(contactName);
   };
 
   // Projects the given point on the VRP region. Returns the given point if it is already inside
@@ -318,6 +328,7 @@ protected:
   std::thread zmpThread_;
   std::mutex eCMPPlanesMutex_;
   std::mutex zeroMomentPlanesMutex_;
+  std::map<std::string, std::mutex> frictionConesPlanesMutexes_;
   // this is a workaround for the fact that mutexes are not movable
   // using this function to get the desired mutex from the name they will be created when needed
   std::mutex & getContactMutex(std::map<std::string, std::mutex> & mutexMap, const std::string & contactName)
@@ -338,6 +349,8 @@ protected:
 
   Eigen::MatrixX3d zeroMomentNormals_;
   Eigen::VectorXd zeroMomentOffsets_;
+
+  std::map<std::string, HRepX3d> frictionConesPlanes_;
 
   // timers to measure computation times
   mc_rtc::duration_ms dt_loop_total_;

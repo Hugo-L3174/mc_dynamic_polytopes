@@ -22,6 +22,9 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 
     boost::shared_ptr<Polytope_Rn> newMomentCone(new Polytope_Rn());
     frictionConesMoments_.emplace(contact, newMomentCone);
+
+    HRepX3d newPlanes;
+    frictionConesPlanes_.emplace(contact, newPlanes);
   }
   // init CWC polytope
   CWCForces_.reset(new Polytope_Rn());
@@ -112,6 +115,10 @@ void DynamicPolytope::computeRegions()
       // mc_rtc::log::info("Joining {} thread and erasing it", contactName);
       frictionConesThreads_.at(contactName).join();
       frictionConesThreads_.erase(contactName);
+      // Updating cones planes hrep
+      std::lock_guard<std::mutex> lock(getContactMutex(frictionConesPlanesMutexes_, contactName));
+      updatePlanesMatrixConstraint(frictionCones_.at(contactName), frictionConesPlanes_.at(contactName).first,
+                                   frictionConesPlanes_.at(contactName).second);
     }
     dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
 
