@@ -44,7 +44,8 @@ void sortFaceVertices(std::vector<Eigen::Vector3d> & vertices, Eigen::Vector3d f
 
 void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles,
-                                    double guiScale)
+                                    double guiScale,
+                                    Eigen::Vector3d contactPose)
 {
   // XXX CAREFUL here we fill a triangles list: this assumes we are in 3d (because each facet has dim vertices in a
   // polytope) BUT this means if we actually manipulate a 6d space the faces will be hexagons? can we assume the
@@ -92,7 +93,7 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
       Eigen::Vector3d vertex(polytope->getGenerator(generatorIndex)->getCoordinate(0),
                              polytope->getGenerator(generatorIndex)->getCoordinate(1),
                              polytope->getGenerator(generatorIndex)->getCoordinate(2));
-      vertices.push_back(vertex * guiScale);
+      vertices.push_back(vertex * guiScale + contactPose);
       // mc_rtc::log::info("Vertex coords: {}", vertex.transpose());
     }
 
