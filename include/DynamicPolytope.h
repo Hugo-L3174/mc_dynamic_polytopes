@@ -6,6 +6,8 @@
 #include <mutex>
 #include <thread>
 
+#include <RBDyn/Coriolis.h>
+
 #include <mc_control/fsm/Controller.h>
 #include <mc_rtc/clock.h>
 #include <mc_rtc/gui.h>
@@ -71,13 +73,13 @@ struct DynamicPolytope
 
   // ------------------------------------------------------> public computation functions
 
-  // compute the contact force cone into a 3D polytope
-  void buildForceConeFromContact(int numberOfFrictionSides,
-                                 sva::PTransformd contactSurface,
-                                 boost::shared_ptr<Polytope_Rn> & forceCone,
-                                 std::mutex & forceConeMutex,
-                                 double m_frictionCoef,
-                                 double maxForce);
+  // compute the contact friction cone into a 3D polytope
+  void buildFrictionConeFromContact(int numberOfFrictionSides,
+                                    sva::PTransformd contactSurface,
+                                    boost::shared_ptr<Polytope_Rn> & frictionCone,
+                                    std::mutex & frictionConeMutex,
+                                    double m_frictionCoef,
+                                    double maxForce);
 
   // compute the force cone and the associated moment cone separately as two 3D polytopes
   void buildWrenchConeFromContact(int numberOfFrictionSides,
@@ -92,7 +94,9 @@ struct DynamicPolytope
   // args should be a polytope pointer/ref and a way to structure the limb Jacobian (only for a chosen limb)
   // think about how to compute bounds if jac non diagonal (redundancy): orso2018ral says QP? or LP?
   // also if not considering zero vel and acc how to use inertia matrix elements
-  void buildActuationPolytopeFromContact(boost::shared_ptr<Polytope_Rn> & actuationPolytope);
+  void buildActuationPolytopeFromContact(const std::string & contactName,
+                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
+                                         std::mutex & forcePolyMutex);
 
   // ------------------------------------------------------> Plane constraints getters
 
@@ -139,9 +143,19 @@ protected:
   void updateTrianglesGUIPolitopix();
 
   /* computes all cones from the surfaces with the given names (set by setCurrentContacts), reset the pointers of the
-  map and updates the H-description of the poly using the double description algorithm.
+  map and updates the H-description of the cone using the double description algorithm.
   */
-  void computeConesFromContactSet(const mc_rbdyn::Robot & robot);
+  void computeFrictionConesFromContactSet(const mc_rbdyn::Robot & robot);
+
+  /* computes all force polytopes from the surfaces with the given names (set by setCurrentContacts), reset the pointers
+  of the map and updates the V-description of the poly using the double description algorithm.
+  */
+  void computeForcePolyFromContactSet(const mc_rbdyn::Robot & robot);
+
+  /* computes the intersection of the friction cones and the force polytopes to get the feasible regions of the
+  individual contacts. They are stored into the friction cones polytopes for now
+  */
+  void computeFeasibleForcesIntersection();
 
   /* computes directly the V-rep of the CWC from individual contact friction cones and the moment limits transformed to
   the CoM (transformation from contact) then runs double description to update H-rep
@@ -245,10 +259,16 @@ protected:
 
   // ------------------------------------------------------> GUI getters
 
-  std::vector<std::array<Eigen::Vector3d, 3>> getForceConesTriangles(const std::string & name)
+  std::vector<std::array<Eigen::Vector3d, 3>> getFrictionConesTriangles(const std::string & name)
   {
-    std::lock_guard<std::mutex> lock(getContactMutex(forceConeTrianglesMutexes_, name));
-    return forceConesTrianglesMap_.at(name);
+    std::lock_guard<std::mutex> lock(getContactMutex(frictionConeTrianglesMutexes_, name));
+    return frictionConesTrianglesMap_.at(name);
+  };
+
+  std::vector<std::array<Eigen::Vector3d, 3>> getForcePolyTriangles(const std::string & name)
+  {
+    std::lock_guard<std::mutex> lock(getContactMutex(forcePolyTrianglesMutexes_, name));
+    return forcePolyTrianglesMap_.at(name);
   };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getContactMomentTriangles(const std::string & name)
@@ -304,6 +324,7 @@ protected:
 
   // politopix
   std::map<std::string, boost::shared_ptr<Polytope_Rn>> frictionCones_;
+  std::map<std::string, boost::shared_ptr<Polytope_Rn>> forcePolytopes_;
   std::map<std::string, boost::shared_ptr<Polytope_Rn>> frictionConesMoments_;
 
   boost::shared_ptr<Polytope_Rn> CWCForces_;
@@ -325,6 +346,8 @@ protected:
   std::mutex contactSetMutex_;
   std::map<std::string, std::thread> frictionConesThreads_;
   std::map<std::string, std::mutex> frictionConesMutexes_;
+  std::map<std::string, std::thread> forcePolyThreads_;
+  std::map<std::string, std::mutex> forcePolyMutexes_;
   std::thread zmpThread_;
   std::mutex eCMPPlanesMutex_;
   std::mutex zeroMomentPlanesMutex_;
@@ -336,7 +359,8 @@ protected:
     return mutexMap[contactName]; // constructs it inside the map if doesn't exist
   }
   // gui mutexes
-  std::map<std::string, std::mutex> forceConeTrianglesMutexes_;
+  std::map<std::string, std::mutex> frictionConeTrianglesMutexes_;
+  std::map<std::string, std::mutex> forcePolyTrianglesMutexes_;
   std::map<std::string, std::mutex> momentTrianglesMutexes_;
   std::mutex CWCForceTrianglesMutex_;
   std::mutex CWCMomentTrianglesMutex_;
@@ -361,7 +385,8 @@ protected:
   mc_rtc::duration_ms dt_zeroMoment_intersection_;
 
   // map of polytope triangles for display
-  std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> forceConesTrianglesMap_;
+  std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> frictionConesTrianglesMap_;
+  std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> forcePolyTrianglesMap_;
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> momentPolytopesTrianglesMap_;
   std::vector<std::array<Eigen::Vector3d, 3>> CWCForceTriangles_;
   std::vector<std::array<Eigen::Vector3d, 3>> CWCMomentTriangles_;
