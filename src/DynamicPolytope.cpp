@@ -107,45 +107,30 @@ void DynamicPolytope::computeRegions()
     // Lock contact set mutex, set active contacts to be used in internal loops then unlock mutex
     setCurrentContacts();
 
-    // Step 1.1: launch individual force polytopes calculations in separate threads as they are independant
-    computeForcePolyFromContactSet(robot_);
-    // buildActuationPolytopeFromContact("LeftFootCenter", forcePolytopes_.at("LeftFootCenter"),
-    //                                   getContactMutex(forcePolyMutexes_, "LeftFootCenter"));
+    // Step 1.1: launch individual force polytopes and friction cones calculations in separate threads as they are
+    // independant, then their intersection
+    computeFeasibleForcesFromContactSet(robot_);
 
-    // Step 1.2: launch individual cones calculations in the same way
-    computeFrictionConesFromContactSet(robot_);
-
-    // Step 1.3: launch ZMP region calculation at the same time, also independant
+    // Step 1.2: launch ZMP region calculation at the same time, also independant
     zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
 
-    // Step 2.1: wait for finished individual cones
-    for(auto contactName : activeContacts_)
+    // Step 2: wait for finished individual feasible regions
+    // Wait for finished threads and join them, then update their matrix constraints
+    for(const auto contactName : activeContacts_)
     {
-      // join all friction cones threads, ie wait they finished, then erase them from the map
-      // mc_rtc::log::info("Joining {} thread and erasing it", contactName);
-      frictionConesThreads_.at(contactName).join();
-      frictionConesThreads_.erase(contactName);
-      // Updating cones planes hrep
+      feasiblePolytopesThreadsMutex_.lock();
+      feasiblePolytopesThreads_.at(contactName).join();
+      feasiblePolytopesThreads_.erase(contactName);
+      feasiblePolytopesThreadsMutex_.unlock();
+
       std::lock_guard<std::mutex> lock(getContactMutex(frictionConesPlanesMutexes_, contactName));
       updatePlanesMatrixConstraint(frictionCones_.at(contactName), frictionConesPlanes_.at(contactName).first,
                                    frictionConesPlanes_.at(contactName).second);
     }
 
-    // Step 2.2: wait for finished individual force polytopes
-    for(auto contactName : activeContacts_)
-    {
-      // join all force polytopes threads, ie wait they finished, then erase them from the map
-      // mc_rtc::log::info("Joining {} thread and erasing it", contactName);
-      forcePolyThreads_.at(contactName).join();
-      forcePolyThreads_.erase(contactName);
-    }
-
-    // Step 3: intersect friction cones and force polytopes to create feasible regions
-    computeFeasibleForcesIntersection();
-
     dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
 
-    // Step 4: All feasible regions computed, start minkowsky sum computation
+    // Step 3: All feasible regions computed, start minkowsky sum computation
     auto start_minkSum = mc_rtc::clock::now();
     computeMinkowskySumPolitopix();
 
@@ -158,7 +143,7 @@ void DynamicPolytope::computeRegions()
     //   mc_rtc::log::critical("Did not get gravity center inside mink with both");
     // }
 
-    // Step 5: wait for finished mink sum to convert to eCMP region (no thread needed)
+    // Step 4: wait for finished mink sum to convert to eCMP region (no thread needed)
     dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
     computeECMPRegion(robot_.com(), robot_);
 
@@ -171,13 +156,13 @@ void DynamicPolytope::computeRegions()
     //   mc_rtc::log::critical("Did not get gravity center inside eCMP with both");
     // }
 
-    // Step 6: wait for finished ZMP region to start zero moment intersection with eCMP region
+    // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
     zmpThread_.join();
     auto start_zeroMomentIntersection = mc_rtc::clock::now();
     computeZeroMomentIntersection();
     dt_zeroMoment_intersection_ = mc_rtc::clock::now() - start_zeroMomentIntersection;
 
-    // Step 7: translate eCMP region and zero-moment intersection to get VRP regions
+    // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
     VRPtranslation(robot_.com().z());
 
     // Update eCMP (now VRP) planes internal variables to be fetched by controller
@@ -201,7 +186,7 @@ void DynamicPolytope::computeRegions()
     //   mc_rtc::log::critical("Did not get gravity center inside VRP with both");
     // }
 
-    // Step 8: gui computations
+    // Step 7: gui computations
     auto start_guiTriangles = mc_rtc::clock::now();
     updateTrianglesGUIPolitopix();
     dt_compute_guiTriangles_ = mc_rtc::clock::now() - start_guiTriangles;
@@ -210,7 +195,7 @@ void DynamicPolytope::computeRegions()
 }
 
 void DynamicPolytope::buildFrictionConeFromContact(int numberOfFrictionSides,
-                                                   sva::PTransformd contactSurface,
+                                                   const sva::PTransformd & contactSurface,
                                                    boost::shared_ptr<Polytope_Rn> & frictionCone,
                                                    std::mutex & frictionConeMutex,
                                                    double m_frictionCoef,
@@ -312,7 +297,7 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
   momentPoly = newMomentPoly;
 }
 
-void DynamicPolytope::buildActuationPolytopeFromContact(const std::string & contactName,
+void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contactName,
                                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
                                                         std::mutex & forceConeMutex)
 {
@@ -420,12 +405,84 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string & cont
   actuationPolytope = newPoly;
 }
 
+void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
+                                                       const mc_rbdyn::Robot & robot,
+                                                       int numberOfFrictionSides,
+                                                       double frictionCoeff,
+                                                       boost::shared_ptr<Polytope_Rn> & frictionCone,
+                                                       std::mutex & frictionConeMutex,
+                                                       boost::shared_ptr<Polytope_Rn> & actuationPolytope,
+                                                       std::mutex & forcePolyMutex)
+{
+  sva::PTransformd contactPose = robot.surfacePose(contactName);
+  auto maxForce = 250.;
+
+  // update the correct force polytope in the map
+  // launching thread and emplacing it in the threads map
+  forcePolyThreadsMutex_.lock();
+  forcePolyThreads_.emplace(contactName,
+                            std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this, contactName,
+                                        std::ref(actuationPolytope), std::ref(forcePolyMutex)));
+#ifndef WIN32
+  // Lower thread priority so that it has a lesser priority than the real time thread
+  auto th_handle = forcePolyThreads_.at(contactName).native_handle();
+  int policy = 0;
+  sched_param param{};
+  pthread_getschedparam(th_handle, &policy, &param);
+  param.sched_priority = 10;
+  if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
+  {
+    // XXX Check if warning exists on real time kernel
+    // mc_rtc::log::warning(
+    //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
+    //     "cause latency to the real-time loop.",
+    //     name_, contactName);
+  }
+#endif
+  forcePolyThreadsMutex_.unlock();
+  // update the correct cone in the map
+  // launching thread and emplacing it in the threads map
+  frictionConesThreadsMutex_.lock();
+  frictionConesThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContact, this,
+                                                         numberOfFrictionSides, contactPose, std::ref(frictionCone),
+                                                         std::ref(frictionConeMutex), frictionCoeff, maxForce));
+#ifndef WIN32
+  // Lower thread priority so that it has a lesser priority than the real time thread
+  th_handle = frictionConesThreads_.at(contactName).native_handle();
+  pthread_getschedparam(th_handle, &policy, &param);
+  param.sched_priority = 10;
+  if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
+  {
+    // mc_rtc::log::warning(
+    //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
+    //     "cause latency to the real-time loop.",
+    //     name_, contactName);
+  }
+#endif
+  frictionConesThreadsMutex_.unlock();
+  // Wait for end of computations
+  forcePolyThreadsMutex_.lock();
+  forcePolyThreads_.at(contactName).join();
+  forcePolyThreads_.erase(contactName);
+  forcePolyThreadsMutex_.unlock();
+
+  frictionConesThreadsMutex_.lock();
+  frictionConesThreads_.at(contactName).join();
+  frictionConesThreads_.erase(contactName);
+  frictionConesThreadsMutex_.unlock();
+
+  // Compute intersection
+  std::lock_guard<mutex> lockFriction(getContactMutex(frictionConesMutexes_, contactName));
+  std::lock_guard<mutex> lockForce(getContactMutex(forcePolyMutexes_, contactName));
+  politopixAPI::computeIntersectionWithoutCheck(frictionCones_.at(contactName), forcePolytopes_.at(contactName));
+}
+
 void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot & robot)
 {
   Rn::setDimension(3);
   auto frictionCoeff = 0.7;
   auto nbFrictionSides = 5;
-  auto maxForce = 280.;
+  auto maxForce = 250.;
   auto CoM = robot.com();
 
   for(const auto contactName : activeContacts_)
@@ -475,11 +532,9 @@ void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot &
 
 void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & robot)
 {
-  Rn::setDimension(3);
+
   for(const auto contactName : activeContacts_)
   {
-    sva::PTransformd contactPose = robot.surfacePose(contactName);
-
     // update the correct force polytope in the map
     // launching thread and emplacing it in the threads map
     forcePolyThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this,
@@ -488,6 +543,40 @@ void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & rob
 #ifndef WIN32
     // Lower thread priority so that it has a lesser priority than the real time thread
     auto th_handle = forcePolyThreads_.at(contactName).native_handle();
+    int policy = 0;
+    sched_param param{};
+    pthread_getschedparam(th_handle, &policy, &param);
+    param.sched_priority = 10;
+    if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
+    {
+      // XXX Check if warning exists on real time kernel
+      // mc_rtc::log::warning(
+      //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
+      //     "cause latency to the real-time loop.",
+      //     name_, contactName);
+    }
+#endif
+  }
+}
+
+void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot)
+{
+  Rn::setDimension(3);
+  auto frictionCoeff = 0.7;
+  auto nbFrictionSides = 5;
+  for(const auto & contactName : activeContacts_)
+  {
+    // launching contact computation
+    std::lock_guard<std::mutex> lock(feasiblePolytopesThreadsMutex_);
+    feasiblePolytopesThreads_.emplace(
+        contactName, std::thread(&DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName, std::ref(robot),
+                                 nbFrictionSides, frictionCoeff, std::ref(frictionCones_.at(contactName)),
+                                 std::ref(getContactMutex(frictionConesMutexes_, contactName)),
+                                 std::ref(forcePolytopes_.at(contactName)),
+                                 std::ref(getContactMutex(forcePolyMutexes_, contactName))));
+#ifndef WIN32
+    // Lower thread priority so that it has a lesser priority than the real time thread
+    auto th_handle = feasiblePolytopesThreads_.at(contactName).native_handle();
     int policy = 0;
     sched_param param{};
     pthread_getschedparam(th_handle, &policy, &param);
@@ -619,17 +708,6 @@ void DynamicPolytope::computeZeroMomentIntersection()
 
   // politopixAPI::computeIntersection(CWCForces_, zmpRegion_, zeroMomentRegion_);
   politopixAPI::computeIntersectionWithoutCheck(zeroMomentRegion_, zmpRegion_);
-}
-
-void DynamicPolytope::computeFeasibleForcesIntersection()
-{
-  // TODO thread this
-  for(const auto & contactName : activeContacts_)
-  {
-    std::lock_guard<mutex> lockFriction(getContactMutex(frictionConesPlanesMutexes_, contactName));
-    std::lock_guard<mutex> lockForce(getContactMutex(forcePolyMutexes_, contactName));
-    politopixAPI::computeIntersectionWithoutCheck(frictionCones_.at(contactName), forcePolytopes_.at(contactName));
-  }
 }
 
 void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)

@@ -31,7 +31,11 @@ struct DynamicPolytope
   // stopping function for destructor
   inline void stopThread()
   {
-    // XXX stop inner threads as well?
+    // for (const auto contactThread : feasiblePolytopesThreads_)
+    // {
+    //   /* code */
+    // }
+
     computing_ = false;
     mainComputeThread_.join();
   }
@@ -75,7 +79,7 @@ struct DynamicPolytope
 
   // compute the contact friction cone into a 3D polytope
   void buildFrictionConeFromContact(int numberOfFrictionSides,
-                                    sva::PTransformd contactSurface,
+                                    const sva::PTransformd & contactSurface,
                                     boost::shared_ptr<Polytope_Rn> & frictionCone,
                                     std::mutex & frictionConeMutex,
                                     double m_frictionCoef,
@@ -94,9 +98,19 @@ struct DynamicPolytope
   // args should be a polytope pointer/ref and a way to structure the limb Jacobian (only for a chosen limb)
   // think about how to compute bounds if jac non diagonal (redundancy): orso2018ral says QP? or LP?
   // also if not considering zero vel and acc how to use inertia matrix elements
-  void buildActuationPolytopeFromContact(const std::string & contactName,
+  void buildActuationPolytopeFromContact(const std::string contactName,
                                          boost::shared_ptr<Polytope_Rn> & actuationPolytope,
                                          std::mutex & forcePolyMutex);
+
+  // compute friction cone and force polytope, then intersect both into the friction cone object
+  void buildFeasiblePolytopeFromContact(const std::string contactName,
+                                        const mc_rbdyn::Robot & robot,
+                                        int numberOfFrictionSides,
+                                        double m_frictionCoef,
+                                        boost::shared_ptr<Polytope_Rn> & frictionCone,
+                                        std::mutex & frictionConeMutex,
+                                        boost::shared_ptr<Polytope_Rn> & actuationPolytope,
+                                        std::mutex & forcePolyMutex);
 
   // ------------------------------------------------------> Plane constraints getters
 
@@ -152,10 +166,10 @@ protected:
   */
   void computeForcePolyFromContactSet(const mc_rbdyn::Robot & robot);
 
-  /* computes the intersection of the friction cones and the force polytopes to get the feasible regions of the
-  individual contacts. They are stored into the friction cones polytopes for now
+  /* Computes for each contact in parallel: the friction cone and force polytope,
+  then their intersection back into the friction cone polytope
   */
-  void computeFeasibleForcesIntersection();
+  void computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot);
 
   /* computes directly the V-rep of the CWC from individual contact friction cones and the moment limits transformed to
   the CoM (transformation from contact) then runs double description to update H-rep
@@ -344,14 +358,19 @@ protected:
   // condition variable to signal start of loop for main thread
   std::condition_variable cv_;
   std::mutex contactSetMutex_;
+  std::map<std::string, std::thread> feasiblePolytopesThreads_;
+  std::mutex feasiblePolytopesThreadsMutex_;
   std::map<std::string, std::thread> frictionConesThreads_;
+  std::mutex frictionConesThreadsMutex_;
   std::map<std::string, std::mutex> frictionConesMutexes_;
   std::map<std::string, std::thread> forcePolyThreads_;
+  std::mutex forcePolyThreadsMutex_;
   std::map<std::string, std::mutex> forcePolyMutexes_;
   std::thread zmpThread_;
   std::mutex eCMPPlanesMutex_;
   std::mutex zeroMomentPlanesMutex_;
   std::map<std::string, std::mutex> frictionConesPlanesMutexes_;
+
   // this is a workaround for the fact that mutexes are not movable
   // using this function to get the desired mutex from the name they will be created when needed
   std::mutex & getContactMutex(std::map<std::string, std::mutex> & mutexMap, const std::string & contactName)
