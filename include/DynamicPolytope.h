@@ -115,29 +115,23 @@ struct DynamicPolytope
   // ------------------------------------------------------> Plane constraints getters
 
   // Returns the internal normals matrix and offsets vector of the eCMP region for QP constraint or check
-  void getECMPPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  const HRepX3d & getVRPPlanes()
   {
-    std::lock_guard<std::mutex> lock(eCMPPlanesMutex_);
-    Normals.resize(eCMPNormals_.rows(), 3);
-    Offsets.resize(eCMPOffsets_.size());
-    Normals = eCMPNormals_;
-    Offsets = eCMPOffsets_;
+    std::lock_guard<std::mutex> lock(VRPPlanesMutex_);
+    return DCMVRPPlanes_;
   };
 
   // Returns the internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
   // constraint or check
-  void getZeroMomentPlanes(Eigen::MatrixX3d & Normals, Eigen::VectorXd & Offsets)
+  const HRepX3d & getZeroMomentPlanes()
   {
     std::lock_guard<std::mutex> lock(zeroMomentPlanesMutex_);
-    Normals.resize(zeroMomentNormals_.rows(), 3);
-    Offsets.resize(zeroMomentOffsets_.size());
-    Normals = zeroMomentNormals_;
-    Offsets = zeroMomentOffsets_;
+    return zeroMomentPlanes_;
   };
 
   // Returns the desired cone H representation
   // Given by copy here, might be dangerous by const ref because of threading computation
-  const HRepX3d getConePlanes(const std::string & contactName)
+  const HRepX3d & getConePlanes(const std::string & contactName)
   {
     std::lock_guard<std::mutex> lock(getContactMutex(frictionConesPlanesMutexes_, contactName));
     return frictionConesPlanes_.at(contactName);
@@ -367,7 +361,7 @@ protected:
   std::mutex forcePolyThreadsMutex_;
   std::map<std::string, std::mutex> forcePolyMutexes_;
   std::thread zmpThread_;
-  std::mutex eCMPPlanesMutex_;
+  std::mutex VRPPlanesMutex_;
   std::mutex zeroMomentPlanesMutex_;
   std::map<std::string, std::mutex> frictionConesPlanesMutexes_;
 
@@ -387,11 +381,9 @@ protected:
   std::mutex zeroMomentTrianglesMutex_;
 
   // Internal matrices of planes and offsets of the regions for constraints
-  Eigen::MatrixX3d eCMPNormals_;
-  Eigen::VectorXd eCMPOffsets_;
+  HRepX3d DCMVRPPlanes_;
 
-  Eigen::MatrixX3d zeroMomentNormals_;
-  Eigen::VectorXd zeroMomentOffsets_;
+  HRepX3d zeroMomentPlanes_;
 
   std::map<std::string, HRepX3d> frictionConesPlanes_;
 

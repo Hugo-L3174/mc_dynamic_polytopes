@@ -165,15 +165,15 @@ void DynamicPolytope::computeRegions()
     // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
     VRPtranslation(robot_.com().z());
 
-    // Update eCMP (now VRP) planes internal variables to be fetched by controller
+    // Update VRP planes internal variables to be fetched by controller
     auto start_updatePlanes = mc_rtc::clock::now();
-    eCMPPlanesMutex_.lock();
-    updatePlanesMatrixConstraint(CWCForces_, eCMPNormals_, eCMPOffsets_);
-    eCMPPlanesMutex_.unlock();
+    VRPPlanesMutex_.lock();
+    updatePlanesMatrixConstraint(CWCForces_, DCMVRPPlanes_.first, DCMVRPPlanes_.second);
+    VRPPlanesMutex_.unlock();
 
     // Update zero moment region planes to be fetched by controller
     zeroMomentPlanesMutex_.lock();
-    updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentNormals_, zeroMomentOffsets_);
+    updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentPlanes_.first, zeroMomentPlanes_.second);
     zeroMomentPlanesMutex_.unlock();
     dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
 
@@ -375,12 +375,19 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   gravVector.fill(-9.81);
 
   // delta: might only need C and H from FD (already have all the elements), then remove top 6 rows
-  Eigen::VectorXd delta = inertiaMat; // Inertia body transpose * body vel? + Inertia* qdotdot + coriolis+ g(q)
+  // Inertia body transpose * body vel? + Inertia* qdotdot + coriolis+ g(q)
+  // XXX check validity of this term
+  Eigen::VectorXd delta = inertiaMat.bottomRows(jacSize) + coriolisVec.bottomRows(jacSize);
+  // mc_rtc::log::info("delta:\n{}", delta.transpose());
+  // mc_rtc::log::info("inertia is {} rows and {} cols, dofs are {}", delta.rows(), delta.cols(), robot_.mb().nrDof());
+  // mc_rtc::log::info("coriolis mat is {} rows and {} cols", coriolisMat.rows(), coriolisMat.cols());
+  // mc_rtc::log::info("coriolis vec is {} rows", coriolisVec.size());
 
   // bineq vec is torque upper and lower limits (with negative lower limits) + delta (inertia, coriolis, gravity...)
   Eigen::VectorXd bineq(Aineq.rows());
-  bineq.segment(0, jacSize) = upperTorqueLims;
-  bineq.segment(jacSize, jacSize) = (-1.0) * lowerTorqueLims;
+  // XXX check signs
+  bineq.segment(0, jacSize) = -delta + upperTorqueLims;
+  bineq.segment(jacSize, jacSize) = delta + (-1.0) * lowerTorqueLims;
   // mc_rtc::log::info("b ineq:\n{}", bineq.transpose());
 
   // Create a half space from every inequality
@@ -398,6 +405,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   }
 
   // Compute double description from half spaces (not generators -> truncation with bounding box)
+  // XXX do I need to double description for normal fans method when already H-rep?
   politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 1000);
   // lock cone mutex, then reset cone pointer to newly computed cone
   std::lock_guard<std::mutex> lock(forceConeMutex);
@@ -415,7 +423,7 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
                                                        std::mutex & forcePolyMutex)
 {
   sva::PTransformd contactPose = robot.surfacePose(contactName);
-  auto maxForce = 250.;
+  auto maxForce = 600.;
 
   // update the correct force polytope in the map
   // launching thread and emplacing it in the threads map
