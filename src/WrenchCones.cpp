@@ -47,13 +47,37 @@ std::vector<Eigen::Vector3d> generatePolyhedralConeGens(int numberOfFrictionSide
   // step is the scale decomposition (precision) with which to compute the actual cone (linearization)
   double step = (M_PI * 2.) / numberOfFrictionSides;
 
-  for(unsigned int i = 0; i < numberOfFrictionSides; ++i)
+  for(unsigned int i = 0; i < numberOfFrictionSides; i++)
   {
     // each generator is formed by the limit points of the linearized cone around the contact normal
     generators[i] = m_rotation.transpose() * Eigen::AngleAxisd(step * i, normal) * gen;
     // mc_rtc::log::info("generator {} of this cone is {}", i, generators[i].transpose());
   }
   return generators;
+}
+
+Eigen::MatrixXd generatePolyhedralConeHRep(int numberOfFrictionSides,
+                                          Eigen::Matrix3d m_rotation,
+                                          double m_frictionCoef)
+{
+  Eigen::MatrixXd HRep(numberOfFrictionSides, 3);
+
+  Eigen::Vector3d normal(Eigen::Vector3d::UnitZ());
+  Eigen::Vector3d tan(Eigen::Vector3d::UnitX());
+  double angle = std::atan(m_frictionCoef);
+
+  // gen is the max tangential axis tolerated around the normal of the contact, deduced from the friction coeff
+  Eigen::Vector3d gen = Eigen::AngleAxisd(angle, tan) * normal;
+
+  // step is the scale decomposition (precision) with which to compute the actual cone (linearization)
+  double step = (M_PI * 2.) / numberOfFrictionSides;
+  for(unsigned int i = 0; i < numberOfFrictionSides; i++)
+  {
+    // each generator is formed by the limit points of the linearized cone around the contact normal
+    // XXX does it need transpose?
+    HRep.row(i) = m_rotation.transpose() * Eigen::AngleAxisd(step * i, normal) * gen;
+  }
+  return HRep;
 }
 
 Eigen::MatrixXd compute6DGeneratorsMatrixSingleCone(
