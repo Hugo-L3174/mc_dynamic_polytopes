@@ -110,7 +110,13 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     Eigen::Vector3d hsNormal(halfSpaceIter.current()->getCoefficient(0), halfSpaceIter.current()->getCoefficient(1),
                              halfSpaceIter.current()->getCoefficient(2));
     hsNormal.normalize();
-    sortFaceVertices(vertices, hsNormal);
+
+    // Safety check: sometimes facets have zero vertices idk why, probably degenerated faces. The sorting throws if this
+    // is the case
+    if(nbVertices != 0)
+    {
+      sortFaceVertices(vertices, hsNormal);
+    }
 
     // add nbVertices<3 condition because nbVertices -2 can be negative (degen faces) and with condition on negative int
     // is evaluated to true
