@@ -211,6 +211,7 @@ protected:
   // Puts the H representation of the given polytope into a matrix (normals) and a vector (offsets) for easy
   // testing/constraining. /!\ politopix convention has normals towards the inside, so we negate them again to return
   // them in usual convention (normals towards exterior)
+  // TODO template this for polyhedral cones
   void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
                                     Eigen::MatrixX3d & Normals,
                                     Eigen::VectorXd & Offsets);
@@ -337,7 +338,10 @@ protected:
   Eigen::Vector3d eCMP_;
 
   // politopix
+
+  // We keep the friction cones as polytope objects, but they are actually polyhedral cones and will not be bounded
   std::map<std::string, boost::shared_ptr<Polytope_Rn>> frictionCones_;
+  // The bounded actuation polytopes
   std::map<std::string, boost::shared_ptr<Polytope_Rn>> forcePolytopes_;
   std::map<std::string, boost::shared_ptr<Polytope_Rn>> frictionConesMoments_;
 

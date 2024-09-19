@@ -256,11 +256,14 @@ void DynamicPolytope::buildFrictionConeFromContact(int numberOfFrictionSides,
     newCone->addHalfSpace(hs);
   }
 
-  // XXX to be removed later
-  politopixAPI::computeDoubleDescriptionWithoutCheck(newCone, 10000);
+  // XXX No need for DD anymore because polyhedron is unbounded, it is a polyhedral cone
+  // politopixAPI::computeDoubleDescriptionWithoutCheck(newCone, 10000);
 
-  mc_rtc::log::info("Computed friction cone with {} hs and {} gens", newCone->numberOfHalfSpaces(),
-                    newCone->numberOfGenerators());
+  // Computing double description for polyhedral cone (polytope would cap the unbounded part)
+  // TODO write DD function for polyhedralCones in politopix and switch friction cones type
+
+  // mc_rtc::log::info("Computed friction cone with {} hs and {} gens", newCone->numberOfHalfSpaces(),
+  //                   newCone->numberOfGenerators());
   // lock cone mutex, then reset cone pointer to newly computed cone
   std::lock_guard<std::mutex> lock(frictionConeMutex);
   frictionCone.reset();
@@ -443,7 +446,8 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 
   // Compute double description from half spaces (not generators -> truncation with bounding box)
   // XXX do I need to double description for normal fans method when already H-rep?
-  politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 1000);
+  // This Hrep contains 2x the number of dofs, DD can simplify but is expensive computationally
+  politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 5000);
   // lock cone mutex, then reset cone pointer to newly computed cone
   std::lock_guard<std::mutex> lock(forceConeMutex);
   actuationPolytope.reset();
@@ -505,20 +509,34 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
 #endif
   frictionConesThreadsMutex_.unlock();
   // Wait for end of computations
-  forcePolyThreadsMutex_.lock();
-  forcePolyThreads_.at(contactName).join();
-  forcePolyThreads_.erase(contactName);
-  forcePolyThreadsMutex_.unlock();
-
   frictionConesThreadsMutex_.lock();
   frictionConesThreads_.at(contactName).join();
   frictionConesThreads_.erase(contactName);
   frictionConesThreadsMutex_.unlock();
 
+  forcePolyThreadsMutex_.lock();
+  forcePolyThreads_.at(contactName).join();
+  forcePolyThreads_.erase(contactName);
+  forcePolyThreadsMutex_.unlock();
+
   // Compute intersection
   std::lock_guard<mutex> lockFriction(getContactMutex(frictionConesMutexes_, contactName));
   std::lock_guard<mutex> lockForce(getContactMutex(forcePolyMutexes_, contactName));
-  politopixAPI::computeIntersectionWithoutCheck(frictionCones_.at(contactName), forcePolytopes_.at(contactName));
+
+  // intersect friction cone planes with force polytope into friction cone object
+  // mc_rtc::log::info("Friction cone {} before intersection: {} hs and {} gens", contactName,
+  //                   frictionCones_.at(contactName)->numberOfHalfSpaces(),
+  //                   frictionCones_.at(contactName)->numberOfGenerators());
+  // mc_rtc::log::info("Force poly {} before intersection: {} hs and {} gens", contactName,
+  //                   forcePolytopes_.at(contactName)->numberOfHalfSpaces(),
+  //                   forcePolytopes_.at(contactName)->numberOfGenerators());
+  politopixAPI::computeIntersectionWithoutCheck(forcePolytopes_.at(contactName), frictionCones_.at(contactName));
+  // mc_rtc::log::info("Friction cone {} after intersection: {} hs and {} gens", contactName,
+  //                   frictionCones_.at(contactName)->numberOfHalfSpaces(),
+  //                   frictionCones_.at(contactName)->numberOfGenerators());
+  // mc_rtc::log::info("Force poly {} after intersection: {} hs and {} gens", contactName,
+  //                   forcePolytopes_.at(contactName)->numberOfHalfSpaces(),
+  //                   forcePolytopes_.at(contactName)->numberOfGenerators());
 }
 
 void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot & robot)
@@ -645,7 +663,9 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
   std::vector<boost::shared_ptr<Polytope_Rn>> polytopesMoments;
   for(const auto & active : activeContacts_)
   {
-    polytopesForces.emplace_back(frictionCones_.at(active));
+    // polytopesForces.emplace_back(frictionCones_.at(active));
+    // The friction + force intersection was overwritten in the force polytopes
+    polytopesForces.emplace_back(forcePolytopes_.at(active));
     if(withMoments_)
     {
       polytopesMoments.emplace_back(frictionConesMoments_.at(active));
