@@ -11,8 +11,8 @@ std::vector<Eigen::Vector3d> generatePolyhedralConeGens(int numberOfFrictionSide
                                                         double maxForce);
 
 Eigen::MatrixXd generatePolyhedralConeHRep(int numberOfFrictionSides,
-                                          Eigen::Matrix3d m_rotation,
-                                          double m_frictionCoef);
+                                           Eigen::Matrix3d m_rotation,
+                                           double m_frictionCoef);
 
 // Compute the 6 x n sized matrix of the generators for a single contact
 // application point is around what the generators must be applied

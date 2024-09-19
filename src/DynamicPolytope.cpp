@@ -194,40 +194,77 @@ void DynamicPolytope::computeRegions()
   }
 }
 
+// void DynamicPolytope::buildFrictionConeFromContact(int numberOfFrictionSides,
+//                                                    const sva::PTransformd & contactSurface,
+//                                                    boost::shared_ptr<Polytope_Rn> & frictionCone,
+//                                                    std::mutex & frictionConeMutex,
+//                                                    double m_frictionCoef,
+//                                                    double maxForce)
+// {
+//   int dim = 3;
+//   boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
+//   // for now generate cone generates only the directions for the rays: we assume it is a polyhedral cone
+//   auto generators =
+//       generatePolyhedralConeGens(numberOfFrictionSides, contactSurface.rotation(), m_frictionCoef, maxForce);
+//   // here we manipulate polytope objects so need to add origin as a generator on the polyhedral cone
+//   generators.emplace_back(Eigen::Vector3d::Zero());
+//   for(const auto g : generators)
+//   {
+//     boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
+//     boost::numeric::ublas::vector<double> coords(3);
+//     coords.insert_element(0, g.x());
+//     coords.insert_element(1, g.y());
+//     coords.insert_element(2, g.z());
+//     gn->setCoordinates(coords);
+//     newCone->addGenerator(gn);
+//     // mc_rtc::log::info("Creating cone with vertex {}", g.transpose());
+//   }
+//   // update faces of the cone
+//   // The face computations are necessary for the minkowsky sum using normal fans
+//   DoubleDescriptionFromGenerators::Compute(newCone, 1000);
+//   // lock cone mutex, then reset cone pointer to newly computed cone
+//   std::lock_guard<std::mutex> lock(frictionConeMutex);
+//   frictionCone.reset();
+//   frictionCone = newCone;
+//   // mc_rtc::log::info("Created cone of dim {} with {} generators", forceCone->dimension(),
+//   //                   forceCone->numberOfGenerators());
+// }
+
 void DynamicPolytope::buildFrictionConeFromContact(int numberOfFrictionSides,
                                                    const sva::PTransformd & contactSurface,
                                                    boost::shared_ptr<Polytope_Rn> & frictionCone,
                                                    std::mutex & frictionConeMutex,
-                                                   double m_frictionCoef,
-                                                   double maxForce)
+                                                   double m_frictionCoef)
 {
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
-  // for now generate cone generates only the directions for the rays: we assume it is a polyhedral cone
-  auto generators =
-      generatePolyhedralConeGens(numberOfFrictionSides, contactSurface.rotation(), m_frictionCoef, maxForce);
-  // here we manipulate polytope objects so need to add origin as a generator on the polyhedral cone
-  generators.emplace_back(Eigen::Vector3d::Zero());
-  for(const auto g : generators)
+
+  // get the friction cones planes
+  auto Hrep = generatePolyhedralConeHRep(numberOfFrictionSides, contactSurface.rotation(), m_frictionCoef);
+  // mc_rtc::log::info("Hrep dims are {} rows, {} columns", Hrep.rows(), Hrep.cols());
+
+  // Adding the planes as the H-representation of the cone directly
+  for(size_t i = 0; i < Hrep.rows(); i++)
   {
-    boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
-    boost::numeric::ublas::vector<double> coords(3);
-    coords.insert_element(0, g.x());
-    coords.insert_element(1, g.y());
-    coords.insert_element(2, g.z());
-    gn->setCoordinates(coords);
-    newCone->addGenerator(gn);
-    // mc_rtc::log::info("Creating cone with vertex {}", g.transpose());
+    boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
+    boost::numeric::ublas::vector<double> normal(3);
+    normal.insert_element(0, Hrep.row(i).coeff(0));
+    normal.insert_element(1, Hrep.row(i).coeff(1));
+    normal.insert_element(2, Hrep.row(i).coeff(2));
+    hs->setCoefficients(normal);
+    hs->setConstant(0.0);
+    newCone->addHalfSpace(hs);
   }
-  // update faces of the cone
-  // The face computations are necessary for the minkowsky sum using normal fans
-  DoubleDescriptionFromGenerators::Compute(newCone, 1000);
+
+  // XXX to be removed later
+  politopixAPI::computeDoubleDescriptionWithoutCheck(newCone, 10000);
+
+  mc_rtc::log::info("Computed friction cone with {} hs and {} gens", newCone->numberOfHalfSpaces(),
+                    newCone->numberOfGenerators());
   // lock cone mutex, then reset cone pointer to newly computed cone
   std::lock_guard<std::mutex> lock(frictionConeMutex);
   frictionCone.reset();
   frictionCone = newCone;
-  // mc_rtc::log::info("Created cone of dim {} with {} generators", forceCone->dimension(),
-  //                   forceCone->numberOfGenerators());
 }
 
 void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
@@ -423,7 +460,6 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
                                                        std::mutex & forcePolyMutex)
 {
   sva::PTransformd contactPose = robot.surfacePose(contactName);
-  auto maxForce = 600.;
 
   // update the correct force polytope in the map
   // launching thread and emplacing it in the threads map
@@ -453,7 +489,7 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   frictionConesThreadsMutex_.lock();
   frictionConesThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContact, this,
                                                          numberOfFrictionSides, contactPose, std::ref(frictionCone),
-                                                         std::ref(frictionConeMutex), frictionCoeff, maxForce));
+                                                         std::ref(frictionConeMutex), frictionCoeff));
 #ifndef WIN32
   // Lower thread priority so that it has a lesser priority than the real time thread
   th_handle = frictionConesThreads_.at(contactName).native_handle();
@@ -500,11 +536,10 @@ void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot &
     {
       // update the correct cone in the map
       // launching thread and emplacing it in the threads map
-      frictionConesThreads_.emplace(contactName,
-                                    std::thread(&DynamicPolytope::buildFrictionConeFromContact, this, nbFrictionSides,
-                                                contactPose, std::ref(frictionCones_.at(contactName)),
-                                                std::ref(getContactMutex(frictionConesMutexes_, contactName)),
-                                                frictionCoeff, maxForce));
+      frictionConesThreads_.emplace(
+          contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContact, this, nbFrictionSides, contactPose,
+                                   std::ref(frictionCones_.at(contactName)),
+                                   std::ref(getContactMutex(frictionConesMutexes_, contactName)), frictionCoeff));
 #ifndef WIN32
       // Lower thread priority so that it has a lesser priority than the real time thread
       auto th_handle = frictionConesThreads_.at(contactName).native_handle();

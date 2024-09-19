@@ -82,8 +82,14 @@ struct DynamicPolytope
                                     const sva::PTransformd & contactSurface,
                                     boost::shared_ptr<Polytope_Rn> & frictionCone,
                                     std::mutex & frictionConeMutex,
-                                    double m_frictionCoef,
-                                    double maxForce);
+                                    double m_frictionCoef);
+
+  // void buildFrictionConeFromContact(int numberOfFrictionSides,
+  //                                   const sva::PTransformd & contactSurface,
+  //                                   boost::shared_ptr<Polytope_Rn> & frictionCone,
+  //                                   std::mutex & frictionConeMutex,
+  //                                   double m_frictionCoef,
+  //                                   double maxForce);
 
   // compute the force cone and the associated moment cone separately as two 3D polytopes
   void buildWrenchConeFromContact(int numberOfFrictionSides,
