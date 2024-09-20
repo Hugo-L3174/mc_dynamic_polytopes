@@ -387,8 +387,10 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   Eigen::MatrixXd inertiaMat = forwardDyn.H();
 
   // Coriolis
+  // XXX should the coriolis matrix be used or the C vector of the forward dynamics?
   rbd::Coriolis coriolis(robot_.mb());
   Eigen::MatrixXd coriolisMat = coriolis.coriolis(robot_.mb(), robot_.mbc());
+
   // XXX this version contains gravity and external forces, to check
   forwardDyn.computeC(robot_.mb(), robot_.mbc());
   Eigen::VectorXd coriolisVec = forwardDyn.C();
@@ -401,9 +403,8 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // for being over the lower torque limits)
   // We also take only the bottom blocks without top 6 to remove underactuated part
   Eigen::MatrixXd Aineq(2 * jacSize, n_var);
-  Aineq.block(0, 0, jacSize, n_var) = Eigen::MatrixXd::Identity(jacSize, jacSize) * fullJacT.block(6, 0, jacSize, 6);
-  Aineq.block(jacSize, 0, jacSize, n_var) =
-      -Eigen::MatrixXd::Identity(jacSize, jacSize) * fullJacT.block(6, 0, jacSize, 6);
+  Aineq.block(0, 0, jacSize, n_var) = fullJacT.block(6, 0, jacSize, 6);
+  Aineq.block(jacSize, 0, jacSize, n_var) = -fullJacT.block(6, 0, jacSize, 6);
   // mc_rtc::log::info("A ineq: \n{}", Aineq);
 
   // Torque limits vectors
@@ -425,29 +426,35 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 
   // bineq vec is torque upper and lower limits (with negative lower limits) + delta (inertia, coriolis, gravity...)
   Eigen::VectorXd bineq(Aineq.rows());
-  // XXX check signs
-  bineq.segment(0, jacSize) = -delta + upperTorqueLims;
-  bineq.segment(jacSize, jacSize) = delta + (-1.0) * lowerTorqueLims;
+
+  bineq.segment(0, jacSize) = delta + upperTorqueLims;
+  bineq.segment(jacSize, jacSize) = (-1.0) * (delta + lowerTorqueLims);
   // mc_rtc::log::info("b ineq:\n{}", bineq.transpose());
 
   // Create a half space from every inequality
   for(size_t i = 0; i < jacSize * 2; i++)
   {
-    boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
-    boost::numeric::ublas::vector<double> coefficients(3);
-    // Setting coefficients as force elements of the ineq matrix (3 last columns)
-    coefficients.insert_element(0, Aineq.coeff(i, 3));
-    coefficients.insert_element(1, Aineq.coeff(i, 4));
-    coefficients.insert_element(2, Aineq.coeff(i, 5));
-    hs->setCoefficients(coefficients);
-    hs->setConstant(bineq.coeff(i));
-    newPoly->addHalfSpace(hs);
+    // Add half space only if row is not null, ie only if this dof plays into the contact force (reduces nb of planes to
+    // simplify in polytope)
+    if(!Aineq.row(i).isZero())
+    {
+      boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
+      boost::numeric::ublas::vector<double> coefficients(3);
+      // Setting coefficients as force elements of the ineq matrix (3 last columns)
+      coefficients.insert_element(0, Aineq.coeff(i, 3));
+      coefficients.insert_element(1, Aineq.coeff(i, 4));
+      coefficients.insert_element(2, Aineq.coeff(i, 5));
+      hs->setCoefficients(coefficients);
+      hs->setConstant(bineq.coeff(i));
+      newPoly->addHalfSpace(hs);
+    }
   }
-
+  auto start_DD = mc_rtc::clock::now();
   // Compute double description from half spaces (not generators -> truncation with bounding box)
-  // XXX do I need to double description for normal fans method when already H-rep?
-  // This Hrep contains 2x the number of dofs, DD can simplify but is expensive computationally
   politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 2000);
+  mc_rtc::duration_ms end_DD = mc_rtc::clock::now() - start_DD;
+  // mc_rtc::log::info("time to run force poly DD : {}ms", end_DD.count());
+
   // lock cone mutex, then reset cone pointer to newly computed cone
   std::lock_guard<std::mutex> lock(forceConeMutex);
   actuationPolytope.reset();
@@ -922,7 +929,7 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
     ZMPTrianglesMutex_.unlock();
 
     zeroMomentTrianglesMutex_.lock();
-    // update3DPolyTrianglesPolitopix(zeroMomentRegion_, zeroMomentTriangles_, 1);
+    update3DPolyTrianglesPolitopix(zeroMomentRegion_, zeroMomentTriangles_, 1);
     zeroMomentTrianglesMutex_.unlock();
 
     if(withMoments_)
