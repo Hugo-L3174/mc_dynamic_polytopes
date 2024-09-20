@@ -29,6 +29,8 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 
     HRepX3d newPlanes;
     frictionConesPlanes_.emplace(contact, newPlanes);
+
+    refContactPoses_.emplace(contact, robot_.surfacePose(contact));
   }
   // init CWC polytope
   CWCForces_.reset(new Polytope_Rn());
@@ -195,7 +197,7 @@ void DynamicPolytope::computeRegions()
 }
 
 void DynamicPolytope::buildFrictionConeFromContactWithVrep(int numberOfFrictionSides,
-                                                           const sva::PTransformd & contactSurface,
+                                                           const sva::PTransformd contactSurface,
                                                            boost::shared_ptr<Polytope_Rn> & frictionCone,
                                                            std::mutex & frictionConeMutex,
                                                            double m_frictionCoef,
@@ -231,7 +233,7 @@ void DynamicPolytope::buildFrictionConeFromContactWithVrep(int numberOfFrictionS
 }
 
 void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
-                                                           const sva::PTransformd & contactSurface,
+                                                           const sva::PTransformd contactSurface,
                                                            boost::shared_ptr<Polytope_Rn> & frictionCone,
                                                            std::mutex & frictionConeMutex,
                                                            double m_frictionCoef)
@@ -338,6 +340,7 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
 }
 
 void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contactName,
+                                                        const mc_rbdyn::Robot & robot,
                                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
                                                         std::mutex & forceConeMutex)
 {
@@ -351,20 +354,20 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   */
   const int n_var = 6;
   // Removing underactuated dofs
-  const int jacSize = robot_.mb().nrDof() - 6;
+  const int jacSize = robot.mb().nrDof() - 6;
 
   // Correct jacobian building needs names because we need to link the surface to a body and compute the jac of the body
   // + transform between surface and the body
-  const mc_rbdyn::Surface & surface = robot_.surface(contactName);
+  const mc_rbdyn::Surface & surface = robot.surface(contactName);
   std::string bodyName = surface.bodyName();
   sva::PTransformd X_s_b;
 
-  X_s_b = robot_.bodyPosW(bodyName) * (robot_.surfacePose(contactName).inv());
+  X_s_b = robot.bodyPosW(bodyName) * (robot.surfacePose(contactName).inv());
 
   // Building jacobian to the contact frame
-  rbd::Jacobian jac(robot_.mb(), bodyName, X_s_b.inv().translation());
+  rbd::Jacobian jac(robot.mb(), bodyName, X_s_b.inv().translation());
   // Dense jacobian
-  Eigen::MatrixXd denseJac = jac.bodyJacobian(robot_.mb(), robot_.mbc());
+  Eigen::MatrixXd denseJac = jac.bodyJacobian(robot.mb(), robot.mbc());
   // mc_rtc::log::info("Dense Jacobian: \n{}", denseJac);
 
   // rotate + transpose dense jacobian
@@ -372,8 +375,8 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // mc_rtc::log::info("Dense Jacobian transposed + rotated: \n{}", denseJacT);
 
   // Allocate then fill sparse jacobian
-  Eigen::MatrixXd fullJac = Eigen::MatrixXd::Zero(6, robot_.mb().nrDof());
-  jac.fullJacobian(robot_.mb(), denseJac, fullJac);
+  Eigen::MatrixXd fullJac = Eigen::MatrixXd::Zero(6, robot.mb().nrDof());
+  jac.fullJacobian(robot.mb(), denseJac, fullJac);
   // mc_rtc::log::info("Sparse Jacobian: \n{}", fullJac);
 
   // rotate to contact frame + transpose for correct calculation
@@ -381,23 +384,23 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // mc_rtc::log::info("Sparse jacobian transposed and rotated to surface frame: \n{}", fullJacT);
 
   // Computing dynamics terms of the equation of motion
-  rbd::ForwardDynamics forwardDyn(robot_.mb());
+  rbd::ForwardDynamics forwardDyn(robot.mb());
   // Inertia
-  forwardDyn.computeH(robot_.mb(), robot_.mbc());
+  forwardDyn.computeH(robot.mb(), robot.mbc());
   Eigen::MatrixXd inertiaMat = forwardDyn.H();
 
   // Coriolis
   // XXX should the coriolis matrix be used or the C vector of the forward dynamics?
-  rbd::Coriolis coriolis(robot_.mb());
-  Eigen::MatrixXd coriolisMat = coriolis.coriolis(robot_.mb(), robot_.mbc());
+  rbd::Coriolis coriolis(robot.mb());
+  Eigen::MatrixXd coriolisMat = coriolis.coriolis(robot.mb(), robot.mbc());
 
   // XXX this version contains gravity and external forces, to check
-  forwardDyn.computeC(robot_.mb(), robot_.mbc());
+  forwardDyn.computeC(robot.mb(), robot.mbc());
   Eigen::VectorXd coriolisVec = forwardDyn.C();
 
   // Joint vectors
-  const Eigen::VectorXd qdot = rbd::dofToVector(robot_.mb(), robot_.mbc().alpha);
-  const Eigen::VectorXd qddot = rbd::dofToVector(robot_.mb(), robot_.mbc().alphaD);
+  const Eigen::VectorXd qdot = rbd::dofToVector(robot.mb(), robot.mbc().alpha);
+  const Eigen::VectorXd qddot = rbd::dofToVector(robot.mb(), robot.mbc().alphaD);
 
   // Aineq matrix is jacobian transpose block to transform wrench vec to joint torque (x2 with second one negative
   // for being over the lower torque limits)
@@ -408,8 +411,8 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // mc_rtc::log::info("A ineq: \n{}", Aineq);
 
   // Torque limits vectors
-  Eigen::VectorXd upperTorqueLims = rbd::dofToVector(robot_.mb(), robot_.tu()).segment(6, jacSize);
-  Eigen::VectorXd lowerTorqueLims = rbd::dofToVector(robot_.mb(), robot_.tl()).segment(6, jacSize);
+  Eigen::VectorXd upperTorqueLims = rbd::dofToVector(robot.mb(), robot.tu()).segment(6, jacSize);
+  Eigen::VectorXd lowerTorqueLims = rbd::dofToVector(robot.mb(), robot.tl()).segment(6, jacSize);
 
   // Gravity vector
   Eigen::VectorXd gravVector(jacSize);
@@ -420,7 +423,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // XXX check validity of this term
   Eigen::VectorXd delta = inertiaMat.bottomRows(jacSize) + coriolisVec.bottomRows(jacSize);
   // mc_rtc::log::info("delta:\n{}", delta.transpose());
-  // mc_rtc::log::info("inertia is {} rows and {} cols, dofs are {}", delta.rows(), delta.cols(), robot_.mb().nrDof());
+  // mc_rtc::log::info("inertia is {} rows and {} cols, dofs are {}", delta.rows(), delta.cols(), robot.mb().nrDof());
   // mc_rtc::log::info("coriolis mat is {} rows and {} cols", coriolisMat.rows(), coriolisMat.cols());
   // mc_rtc::log::info("coriolis vec is {} rows", coriolisVec.size());
 
@@ -463,6 +466,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 
 void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
                                                        const mc_rbdyn::Robot & robot,
+                                                       const sva::PTransformd refContactPose,
                                                        int numberOfFrictionSides,
                                                        double frictionCoeff,
                                                        boost::shared_ptr<Polytope_Rn> & frictionCone,
@@ -470,14 +474,14 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
                                                        boost::shared_ptr<Polytope_Rn> & actuationPolytope,
                                                        std::mutex & forcePolyMutex)
 {
-  sva::PTransformd contactPose = robot.surfacePose(contactName);
+  // sva::PTransformd contactPose = robot.surfacePose(contactName);
 
   // update the correct force polytope in the map
   // launching thread and emplacing it in the threads map
   forcePolyThreadsMutex_.lock();
   forcePolyThreads_.emplace(contactName,
                             std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this, contactName,
-                                        std::ref(actuationPolytope), std::ref(forcePolyMutex)));
+                                        std::ref(robot), std::ref(actuationPolytope), std::ref(forcePolyMutex)));
 #ifndef WIN32
   // Lower thread priority so that it has a lesser priority than the real time thread
   auto th_handle = forcePolyThreads_.at(contactName).native_handle();
@@ -499,7 +503,7 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   // launching thread and emplacing it in the threads map
   frictionConesThreadsMutex_.lock();
   frictionConesThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContactWithHrep, this,
-                                                         numberOfFrictionSides, contactPose, std::ref(frictionCone),
+                                                         numberOfFrictionSides, refContactPose, std::ref(frictionCone),
                                                          std::ref(frictionConeMutex), frictionCoeff));
 #ifndef WIN32
   // Lower thread priority so that it has a lesser priority than the real time thread
@@ -605,9 +609,10 @@ void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & rob
   {
     // update the correct force polytope in the map
     // launching thread and emplacing it in the threads map
-    forcePolyThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this,
-                                                       contactName, std::ref(forcePolytopes_.at(contactName)),
-                                                       std::ref(getContactMutex(forcePolyMutexes_, contactName))));
+    forcePolyThreads_.emplace(contactName,
+                              std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this, contactName,
+                                          std::ref(robot), std::ref(forcePolytopes_.at(contactName)),
+                                          std::ref(getContactMutex(forcePolyMutexes_, contactName))));
 #ifndef WIN32
     // Lower thread priority so that it has a lesser priority than the real time thread
     auto th_handle = forcePolyThreads_.at(contactName).native_handle();
@@ -635,13 +640,15 @@ void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot 
   for(const auto & contactName : activeContacts_)
   {
     // launching contact computation
-    std::lock_guard<std::mutex> lock(feasiblePolytopesThreadsMutex_);
-    feasiblePolytopesThreads_.emplace(
-        contactName, std::thread(&DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName, std::ref(robot),
-                                 nbFrictionSides, frictionCoeff, std::ref(frictionCones_.at(contactName)),
-                                 std::ref(getContactMutex(frictionConesMutexes_, contactName)),
-                                 std::ref(forcePolytopes_.at(contactName)),
-                                 std::ref(getContactMutex(forcePolyMutexes_, contactName))));
+    std::lock_guard<std::mutex> lockThreadMap(feasiblePolytopesThreadsMutex_);
+    std::lock_guard<std::mutex> lockContactSet(contactSetMutex_);
+    feasiblePolytopesThreads_.emplace(contactName,
+                                      std::thread(&DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName,
+                                                  std::ref(robot), refContactPoses_.at(contactName), nbFrictionSides,
+                                                  frictionCoeff, std::ref(frictionCones_.at(contactName)),
+                                                  std::ref(getContactMutex(frictionConesMutexes_, contactName)),
+                                                  std::ref(forcePolytopes_.at(contactName)),
+                                                  std::ref(getContactMutex(forcePolyMutexes_, contactName))));
 #ifndef WIN32
     // Lower thread priority so that it has a lesser priority than the real time thread
     auto th_handle = feasiblePolytopesThreads_.at(contactName).native_handle();

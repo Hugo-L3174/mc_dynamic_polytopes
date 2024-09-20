@@ -40,14 +40,22 @@ struct DynamicPolytope
     mainComputeThread_.join();
   }
 
-  // Set current contact set to be used for next computation
-  void setControllerContacts(const std::vector<std::string> & contactNames)
+  // Set current contact set to be used for next computation: contact name and contact reference pose, ie the frame of
+  // the target surface of the contact (only the orientation is used for the friction cone)
+  void setControllerContacts(const std::vector<std::pair<std::string, sva::PTransformd>> & contacts)
   {
     auto waitForLock = mc_rtc::clock::now();
     std::lock_guard<std::mutex> lock(contactSetMutex_);
     mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
     // mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
-    controllerContacts_ = contactNames;
+    controllerContacts_.clear();
+    refContactPoses_.clear();
+    for(const auto & contact : contacts)
+    {
+      controllerContacts_.emplace_back(contact.first);
+      refContactPoses_.emplace(contact.first, contact.second);
+    }
+
     // if computation has not started yet, launch it
     if(!computing_)
     {
@@ -79,7 +87,7 @@ struct DynamicPolytope
 
   // compute the contact friction cone into an unbounded polyhedral cone (only planes in a polytope object)
   void buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
-                                            const sva::PTransformd & contactSurface,
+                                            const sva::PTransformd contactSurface,
                                             boost::shared_ptr<Polytope_Rn> & frictionCone,
                                             std::mutex & frictionConeMutex,
                                             double m_frictionCoef);
@@ -87,7 +95,7 @@ struct DynamicPolytope
   // compute the contact friction cone into a bounded polytope from the Vrep, with planes formed from the bounding
   // volume computation
   void buildFrictionConeFromContactWithVrep(int numberOfFrictionSides,
-                                            const sva::PTransformd & contactSurface,
+                                            const sva::PTransformd contactSurface,
                                             boost::shared_ptr<Polytope_Rn> & frictionCone,
                                             std::mutex & frictionConeMutex,
                                             double m_frictionCoef,
@@ -107,12 +115,14 @@ struct DynamicPolytope
   // think about how to compute bounds if jac non diagonal (redundancy): orso2018ral says QP? or LP?
   // also if not considering zero vel and acc how to use inertia matrix elements
   void buildActuationPolytopeFromContact(const std::string contactName,
+                                         const mc_rbdyn::Robot & robot,
                                          boost::shared_ptr<Polytope_Rn> & actuationPolytope,
                                          std::mutex & forcePolyMutex);
 
   // compute friction cone and force polytope, then intersect both into the friction cone object
   void buildFeasiblePolytopeFromContact(const std::string contactName,
                                         const mc_rbdyn::Robot & robot,
+                                        const sva::PTransformd refContactPose,
                                         int numberOfFrictionSides,
                                         double m_frictionCoef,
                                         boost::shared_ptr<Polytope_Rn> & frictionCone,
@@ -330,6 +340,8 @@ protected:
   std::set<std::string> possibleContacts_;
   std::set<std::string> activeContacts_;
   std::set<std::string> contactsToRemove_;
+
+  std::map<std::string, sva::PTransformd> refContactPoses_;
 
   // intermediate names vector to be set by controller and used once per compute loop
   std::vector<std::string> controllerContacts_;
