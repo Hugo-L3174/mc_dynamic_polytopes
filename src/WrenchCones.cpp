@@ -72,7 +72,7 @@ Eigen::MatrixXd generatePolyhedralConeHRep(int numberOfFrictionSides, Eigen::Mat
     // each generator is formed by the limit points of the linearized cone around the contact normal
     // XXX we put the positive friction coeff when it should be negative
     // If the normals were towards the exterior in politopix it should be negative
-    normal = {cos(i * step), sin(i * step), m_frictionCoef};
+    normal = {cos(i * step), sin(i * step), atan(m_frictionCoef)};
     HRep.row(i) = normal * m_rotation.transpose();
   }
   return HRep;

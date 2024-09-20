@@ -77,19 +77,21 @@ struct DynamicPolytope
 
   // ------------------------------------------------------> public computation functions
 
-  // compute the contact friction cone into a 3D polytope
-  void buildFrictionConeFromContact(int numberOfFrictionSides,
-                                    const sva::PTransformd & contactSurface,
-                                    boost::shared_ptr<Polytope_Rn> & frictionCone,
-                                    std::mutex & frictionConeMutex,
-                                    double m_frictionCoef);
+  // compute the contact friction cone into an unbounded polyhedral cone (only planes in a polytope object)
+  void buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
+                                            const sva::PTransformd & contactSurface,
+                                            boost::shared_ptr<Polytope_Rn> & frictionCone,
+                                            std::mutex & frictionConeMutex,
+                                            double m_frictionCoef);
 
-  // void buildFrictionConeFromContact(int numberOfFrictionSides,
-  //                                   const sva::PTransformd & contactSurface,
-  //                                   boost::shared_ptr<Polytope_Rn> & frictionCone,
-  //                                   std::mutex & frictionConeMutex,
-  //                                   double m_frictionCoef,
-  //                                   double maxForce);
+  // compute the contact friction cone into a bounded polytope from the Vrep, with planes formed from the bounding
+  // volume computation
+  void buildFrictionConeFromContactWithVrep(int numberOfFrictionSides,
+                                            const sva::PTransformd & contactSurface,
+                                            boost::shared_ptr<Polytope_Rn> & frictionCone,
+                                            std::mutex & frictionConeMutex,
+                                            double m_frictionCoef,
+                                            double maxForce);
 
   // compute the force cone and the associated moment cone separately as two 3D polytopes
   void buildWrenchConeFromContact(int numberOfFrictionSides,
