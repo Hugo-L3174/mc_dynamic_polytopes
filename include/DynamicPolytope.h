@@ -23,6 +23,14 @@
 
 using HRepX3d = std::pair<Eigen::MatrixX3d, Eigen::VectorXd>;
 
+struct ContactTimers
+{
+  mc_rtc::duration_ms dt_frictionCone;
+  mc_rtc::duration_ms dt_forcePolytope;
+  mc_rtc::duration_ms dt_intersection;
+  mc_rtc::duration_ms dt_contactTotal;
+};
+
 struct DynamicPolytope
 {
   DynamicPolytope(const std::string & name, std::set<std::string> contactNames, const mc_rbdyn::Robot & robot);
@@ -128,7 +136,8 @@ struct DynamicPolytope
                                         boost::shared_ptr<Polytope_Rn> & frictionCone,
                                         std::mutex & frictionConeMutex,
                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                        std::mutex & forcePolyMutex);
+                                        std::mutex & forcePolyMutex,
+                                        ContactTimers & timers);
 
   // ------------------------------------------------------> Plane constraints getters
 
@@ -216,6 +225,10 @@ protected:
   // Translates the eCMP region and the zero-moment region with a vertical Delta z offset to get actual DCM region
   void VRPtranslation(double deltaZ);
 
+  // Computes the mink sum of the contact regions, scale to get eCMP region, intersect with ZMP region, and translate
+  // everything to get VRP region
+  void computeVRPRegionWithMinkSum();
+
   // Computes the convex hull of the CWC_ polytope
   // Might be unnecessary, heavy algorithm to remove unnecessary faces
   void computeResultHull();
@@ -282,6 +295,26 @@ protected:
   inline mc_rtc::duration_ms dt_zeroMomentInter() const noexcept
   {
     return dt_zeroMoment_intersection_;
+  }
+
+  inline mc_rtc::duration_ms getContact_dt_frictionCone(const std::string & name) const noexcept
+  {
+    return contactsTimers_.at(name).dt_frictionCone;
+  }
+
+  inline mc_rtc::duration_ms getContact_dt_forcePolytope(const std::string & name) const noexcept
+  {
+    return contactsTimers_.at(name).dt_forcePolytope;
+  }
+
+  inline mc_rtc::duration_ms getContact_dt_intersection(const std::string & name) const noexcept
+  {
+    return contactsTimers_.at(name).dt_intersection;
+  }
+
+  inline mc_rtc::duration_ms getContact_dt_Total(const std::string & name) const noexcept
+  {
+    return contactsTimers_.at(name).dt_contactTotal;
   }
 
   // ------------------------------------------------------> GUI getters
@@ -385,9 +418,15 @@ protected:
   std::mutex forcePolyThreadsMutex_;
   std::map<std::string, std::mutex> forcePolyMutexes_;
   std::thread zmpThread_;
+  std::thread minkSumThread_;
+  std::atomic<bool> VRPRegionComputed_{true};
   std::mutex VRPPlanesMutex_;
   std::mutex zeroMomentPlanesMutex_;
   std::map<std::string, std::mutex> frictionConesPlanesMutexes_;
+
+  std::mutex CWCMutex_;
+  std::mutex ZMPMutex_;
+  std::mutex zeroMomentMutex_;
 
   // this is a workaround for the fact that mutexes are not movable
   // using this function to get the desired mutex from the name they will be created when needed
@@ -418,6 +457,7 @@ protected:
   mc_rtc::duration_ms dt_update_planes_;
   mc_rtc::duration_ms dt_compute_guiTriangles_;
   mc_rtc::duration_ms dt_zeroMoment_intersection_;
+  std::map<std::string, ContactTimers> contactsTimers_;
 
   // map of polytope triangles for display
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> frictionConesTrianglesMap_;

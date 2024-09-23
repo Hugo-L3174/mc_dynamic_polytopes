@@ -31,6 +31,9 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     frictionConesPlanes_.emplace(contact, newPlanes);
 
     refContactPoses_.emplace(contact, robot_.surfacePose(contact));
+
+    ContactTimers newTimers;
+    contactsTimers_.emplace(contact, newTimers);
   }
   // init CWC polytope
   CWCForces_.reset(new Polytope_Rn());
@@ -87,12 +90,23 @@ void DynamicPolytope::load(const mc_rtc::Configuration & config)
 
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
 {
-  logger.addLogEntry(prefix + "dt_totalLoop", this, [this]() { return dt_loop_total().count(); });
-  logger.addLogEntry(prefix + "dt_computeContactSet", this, [this]() { return dt_contactSet().count(); });
-  logger.addLogEntry(prefix + "dt_minkSum", this, [this]() { return dt_minkSum().count(); });
-  logger.addLogEntry(prefix + "dt_updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
-  logger.addLogEntry(prefix + "dt_guiTriangles", this, [this]() { return dt_guiTriangles().count(); });
-  logger.addLogEntry(prefix + "dt_zeroMomentIntersection", this, [this]() { return dt_zeroMomentInter().count(); });
+  logger.addLogEntry(prefix + "totalLoop", this, [this]() { return dt_loop_total().count(); });
+  logger.addLogEntry(prefix + "computeContactSet", this, [this]() { return dt_contactSet().count(); });
+  logger.addLogEntry(prefix + "minkSum", this, [this]() { return dt_minkSum().count(); });
+  logger.addLogEntry(prefix + "updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
+  logger.addLogEntry(prefix + "guiTriangles", this, [this]() { return dt_guiTriangles().count(); });
+  logger.addLogEntry(prefix + "zeroMomentIntersection", this, [this]() { return dt_zeroMomentInter().count(); });
+  for(const auto & contact : possibleContacts_)
+  {
+    logger.addLogEntry(prefix + contact + "_frictionCone", this,
+                       [this, contact]() { return getContact_dt_frictionCone(contact).count(); });
+    logger.addLogEntry(prefix + contact + "_forcePolytope", this,
+                       [this, contact]() { return getContact_dt_forcePolytope(contact).count(); });
+    logger.addLogEntry(prefix + contact + "_intersection", this,
+                       [this, contact]() { return getContact_dt_intersection(contact).count(); });
+    logger.addLogEntry(prefix + contact + "_Total", this,
+                       [this, contact]() { return getContact_dt_Total(contact).count(); });
+  }
 }
 
 void DynamicPolytope::computeRegions()
@@ -114,7 +128,10 @@ void DynamicPolytope::computeRegions()
     computeFeasibleForcesFromContactSet(robot_);
 
     // Step 1.2: launch ZMP region calculation at the same time, also independant
-    zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+    if(!zmpThread_.joinable())
+    {
+      zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+    }
 
     // Step 2: wait for finished individual feasible regions
     // Wait for finished threads and join them, then update their matrix constraints
@@ -132,66 +149,20 @@ void DynamicPolytope::computeRegions()
 
     dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
 
-    // Step 3: All feasible regions computed, start minkowsky sum computation
-    auto start_minkSum = mc_rtc::clock::now();
-    computeMinkowskySumPolitopix();
+    // Steps 3-6: launch the rest everytime the previous full region was computed
+    if(VRPRegionComputed_)
+    {
+      if(minkSumThread_.joinable())
+      {
+        minkSumThread_.join();
+      }
 
-    // if(checkGravityCenterInPolytope(CWCForces_))
-    // {
-    //   mc_rtc::log::info("Gravity center in mink region ok");
-    // }
-    // else
-    // {
-    //   mc_rtc::log::critical("Did not get gravity center inside mink with both");
-    // }
-
-    // Step 4: wait for finished mink sum to convert to eCMP region (no thread needed)
-    dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
-    computeECMPRegion(robot_.com(), robot_);
-
-    // if(checkGravityCenterInPolytope(CWCForces_))
-    // {
-    //   mc_rtc::log::info("Gravity center in eCMP region ok");
-    // }
-    // else
-    // {
-    //   mc_rtc::log::critical("Did not get gravity center inside eCMP with both");
-    // }
-
-    // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
-    zmpThread_.join();
-    auto start_zeroMomentIntersection = mc_rtc::clock::now();
-    computeZeroMomentIntersection();
-    dt_zeroMoment_intersection_ = mc_rtc::clock::now() - start_zeroMomentIntersection;
-
-    // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
-    VRPtranslation(robot_.com().z());
-
-    // Update VRP planes internal variables to be fetched by controller
-    auto start_updatePlanes = mc_rtc::clock::now();
-    VRPPlanesMutex_.lock();
-    updatePlanesMatrixConstraint(CWCForces_, DCMVRPPlanes_.first, DCMVRPPlanes_.second);
-    VRPPlanesMutex_.unlock();
-
-    // Update zero moment region planes to be fetched by controller
-    zeroMomentPlanesMutex_.lock();
-    updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentPlanes_.first, zeroMomentPlanes_.second);
-    zeroMomentPlanesMutex_.unlock();
-    dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
-
-    // if(checkGravityCenterInPolytope(CWCForces_))
-    // {
-    //   mc_rtc::log::info("Gravity center in VRP region ok");
-    // }
-    // else
-    // {
-    //   mc_rtc::log::critical("Did not get gravity center inside VRP with both");
-    // }
+      VRPRegionComputed_ = false;
+      minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
+    }
 
     // Step 7: gui computations
-    auto start_guiTriangles = mc_rtc::clock::now();
     updateTrianglesGUIPolitopix();
-    dt_compute_guiTriangles_ = mc_rtc::clock::now() - start_guiTriangles;
     dt_loop_total_ = mc_rtc::clock::now() - start_loop;
   }
 }
@@ -472,9 +443,11 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
                                                        boost::shared_ptr<Polytope_Rn> & frictionCone,
                                                        std::mutex & frictionConeMutex,
                                                        boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                                       std::mutex & forcePolyMutex)
+                                                       std::mutex & forcePolyMutex,
+                                                       ContactTimers & timers)
 {
   // sva::PTransformd contactPose = robot.surfacePose(contactName);
+  auto start_forcePoly = mc_rtc::clock::now();
 
   // update the correct force polytope in the map
   // launching thread and emplacing it in the threads map
@@ -499,7 +472,8 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   }
 #endif
   forcePolyThreadsMutex_.unlock();
-  // update the correct cone in the map
+
+  auto start_frictionCone = mc_rtc::clock::now();
   // launching thread and emplacing it in the threads map
   frictionConesThreadsMutex_.lock();
   frictionConesThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContactWithHrep, this,
@@ -525,11 +499,16 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   frictionConesThreads_.erase(contactName);
   frictionConesThreadsMutex_.unlock();
 
+  timers.dt_frictionCone = mc_rtc::clock::now() - start_frictionCone;
+
   forcePolyThreadsMutex_.lock();
   forcePolyThreads_.at(contactName).join();
   forcePolyThreads_.erase(contactName);
   forcePolyThreadsMutex_.unlock();
 
+  timers.dt_forcePolytope = mc_rtc::clock::now() - start_forcePoly;
+
+  auto start_intersection = mc_rtc::clock::now();
   // Compute intersection
   std::lock_guard<mutex> lockFriction(getContactMutex(frictionConesMutexes_, contactName));
   std::lock_guard<mutex> lockForce(getContactMutex(forcePolyMutexes_, contactName));
@@ -548,6 +527,8 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   // mc_rtc::log::info("Force poly {} after intersection: {} hs and {} gens", contactName,
   //                   forcePolytopes_.at(contactName)->numberOfHalfSpaces(),
   //                   forcePolytopes_.at(contactName)->numberOfGenerators());
+  timers.dt_intersection = mc_rtc::clock::now() - start_intersection;
+  timers.dt_contactTotal = mc_rtc::clock::now() - start_forcePoly;
 }
 
 void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot & robot)
@@ -642,13 +623,13 @@ void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot 
     // launching contact computation
     std::lock_guard<std::mutex> lockThreadMap(feasiblePolytopesThreadsMutex_);
     std::lock_guard<std::mutex> lockContactSet(contactSetMutex_);
-    feasiblePolytopesThreads_.emplace(contactName,
-                                      std::thread(&DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName,
-                                                  std::ref(robot), refContactPoses_.at(contactName), nbFrictionSides,
-                                                  frictionCoeff, std::ref(frictionCones_.at(contactName)),
-                                                  std::ref(getContactMutex(frictionConesMutexes_, contactName)),
-                                                  std::ref(forcePolytopes_.at(contactName)),
-                                                  std::ref(getContactMutex(forcePolyMutexes_, contactName))));
+    feasiblePolytopesThreads_.emplace(
+        contactName,
+        std::thread(
+            &DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName, std::ref(robot),
+            refContactPoses_.at(contactName), nbFrictionSides, frictionCoeff, std::ref(frictionCones_.at(contactName)),
+            std::ref(getContactMutex(frictionConesMutexes_, contactName)), std::ref(forcePolytopes_.at(contactName)),
+            std::ref(getContactMutex(forcePolyMutexes_, contactName)), std::ref(contactsTimers_.at(contactName))));
 #ifndef WIN32
     // Lower thread priority so that it has a lesser priority than the real time thread
     auto th_handle = feasiblePolytopesThreads_.at(contactName).native_handle();
@@ -670,8 +651,10 @@ void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot 
 
 void DynamicPolytope::computeMinkowskySumPolitopix()
 {
-  CWCForces_->reset();
-  CWCMoments_->reset();
+  auto start_minkSum = mc_rtc::clock::now();
+  boost::shared_ptr<Polytope_Rn> newForcePoly(new Polytope_Rn());
+  boost::shared_ptr<Polytope_Rn> newMomentPoly(new Polytope_Rn());
+
   // putting it in vector form for library function
   std::vector<boost::shared_ptr<Polytope_Rn>> polytopesForces;
   std::vector<boost::shared_ptr<Polytope_Rn>> polytopesMoments;
@@ -686,15 +669,27 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
     }
   }
 
-  MinkowskiSum Mink(polytopesForces, CWCForces_);
+  MinkowskiSum Mink(polytopesForces, newForcePoly);
   // mc_rtc::log::info("CWCForces_ has {} generators and {} facets", CWCForces_->numberOfGenerators(),
   // CWCForces_->numberOfHalfSpaces());
   if(withMoments_)
   {
-    MinkowskiSum Mink(polytopesMoments, CWCMoments_);
+    MinkowskiSum Mink(polytopesMoments, newMomentPoly);
     // mc_rtc::log::info("CWCMoments_ has {} generators and {} facets", CWCMoments_->numberOfGenerators(),
     // CWCMoments_->numberOfHalfSpaces());
   }
+
+  std::lock_guard<std::mutex> lock(CWCMutex_);
+  CWCForces_.reset();
+  CWCForces_ = newForcePoly;
+
+  if(withMoments_)
+  {
+    CWCMoments_.reset();
+    CWCMoments_ = newMomentPoly;
+  }
+
+  dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
 }
 
 void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)
@@ -778,13 +773,55 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
 
 void DynamicPolytope::computeZeroMomentIntersection()
 {
+  auto start_zeroMomentIntersection = mc_rtc::clock::now();
+  zeroMomentMutex_.lock();
   zeroMomentRegion_->reset();
   // making a deep copy of the force polytope to use as base for intersection with zmp region
   // (avoids shared_ptr problems)
+  CWCMutex_.lock();
   politopixAPI::copyPolytope(CWCForces_, zeroMomentRegion_);
+  CWCMutex_.unlock();
 
+  ZMPMutex_.lock();
   // politopixAPI::computeIntersection(CWCForces_, zmpRegion_, zeroMomentRegion_);
   politopixAPI::computeIntersectionWithoutCheck(zeroMomentRegion_, zmpRegion_);
+  ZMPMutex_.unlock();
+  zeroMomentMutex_.unlock();
+
+  dt_zeroMoment_intersection_ = mc_rtc::clock::now() - start_zeroMomentIntersection;
+}
+
+void DynamicPolytope::computeVRPRegionWithMinkSum()
+{
+  // Step 3: All feasible regions computed, start minkowsky sum computation
+  computeMinkowskySumPolitopix();
+
+  // Step 4: wait for finished mink sum to convert to eCMP region (no thread needed)
+  computeECMPRegion(robot_.com(), robot_);
+
+  // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
+  zmpThread_.join();
+  computeZeroMomentIntersection();
+
+  // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
+  VRPtranslation(robot_.com().z());
+
+  // Update VRP planes internal variables to be fetched by controller
+  auto start_updatePlanes = mc_rtc::clock::now();
+  VRPPlanesMutex_.lock();
+  CWCMutex_.lock();
+  updatePlanesMatrixConstraint(CWCForces_, DCMVRPPlanes_.first, DCMVRPPlanes_.second);
+  CWCMutex_.unlock();
+  VRPPlanesMutex_.unlock();
+
+  // Update zero moment region planes to be fetched by controller
+  zeroMomentPlanesMutex_.lock();
+  zeroMomentMutex_.lock();
+  updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentPlanes_.first, zeroMomentPlanes_.second);
+  zeroMomentMutex_.unlock();
+  zeroMomentPlanesMutex_.unlock();
+  dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
+  VRPRegionComputed_ = true;
 }
 
 void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)
@@ -886,12 +923,15 @@ bool DynamicPolytope::checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn
 
 void DynamicPolytope::updateTrianglesGUIPolitopix()
 {
+  auto start_guiTriangles = mc_rtc::clock::now();
   for(const auto & contact : activeContacts_)
   {
     auto contactPose = robot_.surfacePose(contact).translation();
     getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
+    getContactMutex(frictionConesMutexes_, contact).lock();
     update3DPolyTrianglesPolitopix(frictionCones_.at(contact), frictionConesTrianglesMap_.at(contact), guiScale_,
                                    contactPose);
+    getContactMutex(frictionConesMutexes_, contact).unlock();
     getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
     if(withMoments_)
     {
@@ -901,8 +941,10 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
       getContactMutex(momentTrianglesMutexes_, contact).unlock();
     }
     getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
+    getContactMutex(forcePolyMutexes_, contact).lock();
     update3DPolyTrianglesPolitopix(forcePolytopes_.at(contact), forcePolyTrianglesMap_.at(contact), guiScale_,
                                    contactPose);
+    getContactMutex(forcePolyMutexes_, contact).unlock();
     getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
   }
   for(const auto & contact : contactsToRemove_)
@@ -926,17 +968,23 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
     // gui scale for CWC should be 1, it is position space and not force space (because eCMP)
     // update6DPolyTrianglesPolitopix(CWC_, CWCMomentTriangles_, CWCForceTriangles_, guiScale_);
     CWCForceTrianglesMutex_.lock();
+    CWCMutex_.lock();
     update3DPolyTrianglesPolitopix(CWCForces_, CWCForceTriangles_, 1);
+    CWCMutex_.unlock();
     CWCForceTrianglesMutex_.unlock();
     // mc_rtc::log::info("force triangle is of size {}", CWCForceTriangles_.size());
 
     // scale 1 here: already position space
     ZMPTrianglesMutex_.lock();
+    ZMPMutex_.lock();
     update3DPolyTrianglesPolitopix(zmpRegion_, ZMPTriangles_, 1);
+    ZMPMutex_.unlock();
     ZMPTrianglesMutex_.unlock();
 
     zeroMomentTrianglesMutex_.lock();
+    zeroMomentMutex_.lock();
     update3DPolyTrianglesPolitopix(zeroMomentRegion_, zeroMomentTriangles_, 1);
+    zeroMomentMutex_.unlock();
     zeroMomentTrianglesMutex_.unlock();
 
     if(withMoments_)
@@ -967,6 +1015,7 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
       CWCMomentTrianglesMutex_.unlock();
     }
   }
+  dt_compute_guiTriangles_ = mc_rtc::clock::now() - start_guiTriangles;
 }
 
 void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
