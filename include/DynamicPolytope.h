@@ -45,6 +45,7 @@ struct DynamicPolytope
     // }
 
     computing_ = false;
+    minkSumThread_.join();
     mainComputeThread_.join();
   }
 
@@ -174,8 +175,11 @@ protected:
   // intended to be called in a thread, and will thread region calculations correctly
   void computeRegions();
 
-  // Updates the internal maps of triangles for gui display for the given contact names
-  void updateTrianglesGUIPolitopix();
+  // Updates the internal maps of triangles of the contacts for gui display
+  void updateTrianglesContactsGUIPolitopix();
+
+  // Updates the internal maps of triangles of the total regions for gui display
+  void updateTrianglesRegionsGUIPolitopix();
 
   /* computes all cones from the surfaces with the given names (set by setCurrentContacts), reset the pointers of the
   map and updates the H-description of the cone using the double description algorithm.
@@ -287,9 +291,14 @@ protected:
     return dt_update_planes_;
   }
 
-  inline mc_rtc::duration_ms dt_guiTriangles() const noexcept
+  inline mc_rtc::duration_ms dt_guiTrianglesContacts() const noexcept
   {
-    return dt_compute_guiTriangles_;
+    return dt_compute_guiTrianglesContacts_;
+  }
+
+  inline mc_rtc::duration_ms dt_guiTrianglesRegions() const noexcept
+  {
+    return dt_compute_guiTrianglesRegions_;
   }
 
   inline mc_rtc::duration_ms dt_zeroMomentInter() const noexcept
@@ -455,7 +464,8 @@ protected:
   mc_rtc::duration_ms dt_compute_contactSet_;
   mc_rtc::duration_ms dt_compute_minkSum_;
   mc_rtc::duration_ms dt_update_planes_;
-  mc_rtc::duration_ms dt_compute_guiTriangles_;
+  mc_rtc::duration_ms dt_compute_guiTrianglesContacts_;
+  mc_rtc::duration_ms dt_compute_guiTrianglesRegions_;
   mc_rtc::duration_ms dt_zeroMoment_intersection_;
   std::map<std::string, ContactTimers> contactsTimers_;
 

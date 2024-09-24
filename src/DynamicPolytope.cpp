@@ -90,21 +90,25 @@ void DynamicPolytope::load(const mc_rtc::Configuration & config)
 
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
 {
-  logger.addLogEntry(prefix + "totalLoop", this, [this]() { return dt_loop_total().count(); });
-  logger.addLogEntry(prefix + "computeContactSet", this, [this]() { return dt_contactSet().count(); });
-  logger.addLogEntry(prefix + "minkSum", this, [this]() { return dt_minkSum().count(); });
-  logger.addLogEntry(prefix + "updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
-  logger.addLogEntry(prefix + "guiTriangles", this, [this]() { return dt_guiTriangles().count(); });
-  logger.addLogEntry(prefix + "zeroMomentIntersection", this, [this]() { return dt_zeroMomentInter().count(); });
+  logger.addLogEntry("perf_" + prefix + "totalLoop", this, [this]() { return dt_loop_total().count(); });
+  logger.addLogEntry("perf_" + prefix + "computeContactSet", this, [this]() { return dt_contactSet().count(); });
+  logger.addLogEntry("perf_" + prefix + "minkSum", this, [this]() { return dt_minkSum().count(); });
+  logger.addLogEntry("perf_" + prefix + "updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
+  logger.addLogEntry("perf_" + prefix + "guiTrianglesContacts", this,
+                     [this]() { return dt_guiTrianglesContacts().count(); });
+  logger.addLogEntry("perf_" + prefix + "guiTrianglesRegions", this,
+                     [this]() { return dt_guiTrianglesRegions().count(); });
+  logger.addLogEntry("perf_" + prefix + "zeroMomentIntersection", this,
+                     [this]() { return dt_zeroMomentInter().count(); });
   for(const auto & contact : possibleContacts_)
   {
-    logger.addLogEntry(prefix + contact + "_frictionCone", this,
+    logger.addLogEntry("perf_" + prefix + contact + "_frictionCone", this,
                        [this, contact]() { return getContact_dt_frictionCone(contact).count(); });
-    logger.addLogEntry(prefix + contact + "_forcePolytope", this,
+    logger.addLogEntry("perf_" + prefix + contact + "_forcePolytope", this,
                        [this, contact]() { return getContact_dt_forcePolytope(contact).count(); });
-    logger.addLogEntry(prefix + contact + "_intersection", this,
+    logger.addLogEntry("perf_" + prefix + contact + "_intersection", this,
                        [this, contact]() { return getContact_dt_intersection(contact).count(); });
-    logger.addLogEntry(prefix + contact + "_Total", this,
+    logger.addLogEntry("perf_" + prefix + contact + "_Total", this,
                        [this, contact]() { return getContact_dt_Total(contact).count(); });
   }
 }
@@ -130,7 +134,7 @@ void DynamicPolytope::computeRegions()
     // Step 1.2: launch ZMP region calculation at the same time, also independant
     if(!zmpThread_.joinable())
     {
-      zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+      // zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
     }
 
     // Step 2: wait for finished individual feasible regions
@@ -149,6 +153,9 @@ void DynamicPolytope::computeRegions()
 
     dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
 
+    // Update contacts GUI
+    updateTrianglesContactsGUIPolitopix();
+
     // Steps 3-6: launch the rest everytime the previous full region was computed
     if(VRPRegionComputed_)
     {
@@ -161,8 +168,7 @@ void DynamicPolytope::computeRegions()
       minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
     }
 
-    // Step 7: gui computations
-    updateTrianglesGUIPolitopix();
+    // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updating
     dt_loop_total_ = mc_rtc::clock::now() - start_loop;
   }
 }
@@ -618,11 +624,11 @@ void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot 
   Rn::setDimension(3);
   auto frictionCoeff = 0.7;
   auto nbFrictionSides = 5;
+  std::lock_guard<std::mutex> lock(contactSetMutex_);
   for(const auto & contactName : activeContacts_)
   {
     // launching contact computation
     std::lock_guard<std::mutex> lockThreadMap(feasiblePolytopesThreadsMutex_);
-    std::lock_guard<std::mutex> lockContactSet(contactSetMutex_);
     feasiblePolytopesThreads_.emplace(
         contactName,
         std::thread(
@@ -658,16 +664,26 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
   // putting it in vector form for library function
   std::vector<boost::shared_ptr<Polytope_Rn>> polytopesForces;
   std::vector<boost::shared_ptr<Polytope_Rn>> polytopesMoments;
+
+  // protecting set of contact names
+  contactSetMutex_.lock();
   for(const auto & active : activeContacts_)
   {
-    // polytopesForces.emplace_back(frictionCones_.at(active));
+    boost::shared_ptr<Polytope_Rn> newContactPoly(new Polytope_Rn());
     // The friction + force intersection was overwritten in the force polytopes
-    polytopesForces.emplace_back(forcePolytopes_.at(active));
+    // Locking polytope mutex
+    // Copying the contact polytopes to use for mink computation
+    getContactMutex(forcePolyMutexes_, active).lock();
+    politopixAPI::copyPolytope(forcePolytopes_.at(active), newContactPoly);
+    getContactMutex(forcePolyMutexes_, active).unlock();
+
+    polytopesForces.emplace_back(newContactPoly);
     if(withMoments_)
     {
       polytopesMoments.emplace_back(frictionConesMoments_.at(active));
     }
   }
+  contactSetMutex_.unlock();
 
   MinkowskiSum Mink(polytopesForces, newForcePoly);
   // mc_rtc::log::info("CWCForces_ has {} generators and {} facets", CWCForces_->numberOfGenerators(),
@@ -800,8 +816,8 @@ void DynamicPolytope::computeVRPRegionWithMinkSum()
   computeECMPRegion(robot_.com(), robot_);
 
   // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
-  zmpThread_.join();
-  computeZeroMomentIntersection();
+  // zmpThread_.join();
+  // computeZeroMomentIntersection();
 
   // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
   VRPtranslation(robot_.com().z());
@@ -821,6 +837,9 @@ void DynamicPolytope::computeVRPRegionWithMinkSum()
   zeroMomentMutex_.unlock();
   zeroMomentPlanesMutex_.unlock();
   dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
+
+  // Update GUI display of regions
+  updateTrianglesRegionsGUIPolitopix();
   VRPRegionComputed_ = true;
 }
 
@@ -921,10 +940,16 @@ bool DynamicPolytope::checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn
   return retResultPolitopix && retResultEigen;
 }
 
-void DynamicPolytope::updateTrianglesGUIPolitopix()
+void DynamicPolytope::updateTrianglesContactsGUIPolitopix()
 {
   auto start_guiTriangles = mc_rtc::clock::now();
-  for(const auto & contact : activeContacts_)
+  // Protecting set of names (threaded) then copying
+  contactSetMutex_.lock();
+  auto activeContactSet = activeContacts_;
+  auto contactsToBeRemoved = contactsToRemove_;
+  contactSetMutex_.unlock();
+
+  for(const auto & contact : activeContactSet)
   {
     auto contactPose = robot_.surfacePose(contact).translation();
     getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
@@ -947,7 +972,7 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
     getContactMutex(forcePolyMutexes_, contact).unlock();
     getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
   }
-  for(const auto & contact : contactsToRemove_)
+  for(const auto & contact : contactsToBeRemoved)
   {
     getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
     frictionConesTrianglesMap_.at(contact).clear();
@@ -962,8 +987,17 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
     forcePolyTrianglesMap_.at(contact).clear();
     getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
   }
+  dt_compute_guiTrianglesContacts_ = mc_rtc::clock::now() - start_guiTriangles;
+}
 
-  if(!activeContacts_.empty())
+void DynamicPolytope::updateTrianglesRegionsGUIPolitopix()
+{
+  auto start_guiTriangles = mc_rtc::clock::now();
+  contactSetMutex_.lock();
+  auto noActiveContacts = activeContacts_.empty();
+  contactSetMutex_.unlock();
+
+  if(!noActiveContacts)
   {
     // gui scale for CWC should be 1, it is position space and not force space (because eCMP)
     // update6DPolyTrianglesPolitopix(CWC_, CWCMomentTriangles_, CWCForceTriangles_, guiScale_);
@@ -1015,7 +1049,7 @@ void DynamicPolytope::updateTrianglesGUIPolitopix()
       CWCMomentTrianglesMutex_.unlock();
     }
   }
-  dt_compute_guiTriangles_ = mc_rtc::clock::now() - start_guiTriangles;
+  dt_compute_guiTrianglesRegions_ = mc_rtc::clock::now() - start_guiTriangles;
 }
 
 void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
