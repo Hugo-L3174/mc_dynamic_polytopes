@@ -218,9 +218,9 @@ protected:
   /* Computes the 3d volume formed between the possible ZMP area(s) and the CoM of the robot
   TODO this is potentially several convex areas! (caron tro) see how to handle this
   */
-  void computeZMPRegion(const mc_rbdyn::Robot & robot,const std::vector<mc_rbdyn::Contact> & contacts);
+  void computeZMPRegion(const mc_rbdyn::Robot & robot, const std::vector<mc_rbdyn::Contact> & contacts);
 
-  void computeMomentLessForceCone(const mc_rbdyn::Robot & robot,const std::vector<mc_rbdyn::Contact> & contacts);
+  void computeMomentLessForceCone(const mc_rbdyn::Robot & robot, const std::vector<mc_rbdyn::Contact> & contacts);
 
   // Creates a 6d contact friction cone from the contact surface border points
   // The generators are computed then used to build the Polytope_Rn object which is added to the cones vector
@@ -260,7 +260,6 @@ protected:
   void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
                                     Eigen::MatrixX3d & Normals,
                                     Eigen::VectorXd & Offsets);
-
 
   Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
 
@@ -361,7 +360,6 @@ protected:
     return CWCMomentLessUnCstrTriangles_;
   };
 
-  
   // std::vector<std::array<Eigen::Vector3d, 3>> getECMPTriangles()
   // {
   //   return eCMPTriangles_;
@@ -380,7 +378,6 @@ protected:
   };
 
 protected:
-
   // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
   void setCurrentContacts()
   {
@@ -399,7 +396,6 @@ protected:
       contactsToRemove_.erase(contactName);
     }
   };
-
 
   std::string name_;
   const mc_rbdyn::Robot & robot_;

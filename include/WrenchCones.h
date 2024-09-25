@@ -1,9 +1,8 @@
 #pragma once
 #include <mc_control/fsm/Controller.h>
-#include <eigen3/Eigen/Dense>
-#include <RBDyn/Jacobian.h>
 #include <mc_rbdyn/Robot.h>
-
+#include <RBDyn/Jacobian.h>
+#include <eigen3/Eigen/Dense>
 
 Eigen::MatrixXd linearizedFrictionCone(int numberOfFrictionSides, Eigen::Matrix3d m_rotation, double m_frictionCoef);
 
