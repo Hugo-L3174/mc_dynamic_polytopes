@@ -39,14 +39,13 @@ struct DynamicPolytope
   // stopping function for destructor
   inline void stopThread()
   {
-    // for (const auto contactThread : feasiblePolytopesThreads_)
-    // {
-    //   /* code */
-    // }
-
     computing_ = false;
-    minkSumThread_.join();
     mainComputeThread_.join();
+    minkSumThread_.join();
+    for(auto & thread : feasiblePolytopesThreads_)
+    {
+      thread.second.join();
+    }
   }
 
   // Set current contact set to be used for next computation: contact name and contact reference pose, ie the frame of
@@ -465,7 +464,7 @@ protected:
   mc_rtc::duration_ms dt_compute_minkSum_;
   mc_rtc::duration_ms dt_update_planes_;
   mc_rtc::duration_ms dt_compute_guiTrianglesContacts_;
-  mc_rtc::duration_ms dt_compute_guiTrianglesRegions_;
+  mc_rtc::duration_ms dt_compute_guiTrianglesRegions_ = mc_rtc::duration_ms::zero();
   mc_rtc::duration_ms dt_zeroMoment_intersection_;
   std::map<std::string, ContactTimers> contactsTimers_;
 

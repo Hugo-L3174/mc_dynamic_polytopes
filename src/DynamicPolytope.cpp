@@ -134,7 +134,7 @@ void DynamicPolytope::computeRegions()
     // Step 1.2: launch ZMP region calculation at the same time, also independant
     if(!zmpThread_.joinable())
     {
-      // zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+      zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
     }
 
     // Step 2: wait for finished individual feasible regions
@@ -685,7 +685,18 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
   }
   contactSetMutex_.unlock();
 
-  MinkowskiSum Mink(polytopesForces, newForcePoly);
+  try
+  {
+    MinkowskiSum Mink(polytopesForces, newForcePoly);
+    std::lock_guard<std::mutex> lock(CWCMutex_);
+    CWCForces_.reset();
+    CWCForces_ = newForcePoly;
+  }
+  catch(const std::exception & e)
+  {
+    mc_rtc::log::error("[{}] Minkowski sum error: {}", name_, e.what());
+  }
+
   // mc_rtc::log::info("CWCForces_ has {} generators and {} facets", CWCForces_->numberOfGenerators(),
   // CWCForces_->numberOfHalfSpaces());
   if(withMoments_)
@@ -693,14 +704,6 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
     MinkowskiSum Mink(polytopesMoments, newMomentPoly);
     // mc_rtc::log::info("CWCMoments_ has {} generators and {} facets", CWCMoments_->numberOfGenerators(),
     // CWCMoments_->numberOfHalfSpaces());
-  }
-
-  std::lock_guard<std::mutex> lock(CWCMutex_);
-  CWCForces_.reset();
-  CWCForces_ = newForcePoly;
-
-  if(withMoments_)
-  {
     CWCMoments_.reset();
     CWCMoments_ = newMomentPoly;
   }
@@ -745,6 +748,7 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
 {
   // XXX dummy zone for now: convex area formed by the polygon envelope of feet + com position
   int dim = 3;
+  std::lock_guard<std::mutex> lock(ZMPMutex_);
   zmpRegion_->reset();
 
   // manually adding left foot points
@@ -816,8 +820,8 @@ void DynamicPolytope::computeVRPRegionWithMinkSum()
   computeECMPRegion(robot_.com(), robot_);
 
   // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
-  // zmpThread_.join();
-  // computeZeroMomentIntersection();
+  zmpThread_.join();
+  computeZeroMomentIntersection();
 
   // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
   VRPtranslation(robot_.com().z());
@@ -852,18 +856,6 @@ void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d comPosition, const mc
   bool ok = TopGeomTools::scalingFactor(CWCMoments_, scale);
 
   // TODO change coords from varignon (check) + check that corresponds to inside of eCMP region?
-}
-
-Eigen::Vector3d DynamicPolytope::computeECMP(const mc_rbdyn::Robot & robot)
-{
-  std::vector<std::string> contactsFSensors;
-  for(const auto & fsensor : robot.forceSensors())
-  {
-    contactsFSensors.emplace_back(fsensor.name());
-  }
-  robotNetWrench_ = robot.netWrench(contactsFSensors);
-  eCMP_ = robot.com() - (robot.com().z()) / (robot.mass() * 9.81) * robotNetWrench_.force();
-  return eCMP_;
 }
 
 // Eigen::Vector3d projectPointInVRPRegion(Eigen::Vector3d testedPoint)
@@ -1006,7 +998,6 @@ void DynamicPolytope::updateTrianglesRegionsGUIPolitopix()
     update3DPolyTrianglesPolitopix(CWCForces_, CWCForceTriangles_, 1);
     CWCMutex_.unlock();
     CWCForceTrianglesMutex_.unlock();
-    // mc_rtc::log::info("force triangle is of size {}", CWCForceTriangles_.size());
 
     // scale 1 here: already position space
     ZMPTrianglesMutex_.lock();
