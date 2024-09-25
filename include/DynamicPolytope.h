@@ -64,6 +64,21 @@ struct DynamicPolytope
       refContactPoses_.emplace(contact.first, contact.second);
     }
 
+    // controllerContactsNames_ = contacts;
+    // if computation has not started yet, launch it
+    if(!computing_)
+    {
+      computing_ = true;
+      // signal main computation thread
+      cv_.notify_one();
+    }
+  }
+
+  // Set current contact set to be used for next computation
+  void setControllerContactsRBDyn(const std::vector<mc_rbdyn::Contact> & contacts)
+  {
+    std::lock_guard<std::mutex> lock(contactSetMutex_);
+    contactsRBDyn_ = contacts;
     // if computation has not started yet, launch it
     if(!computing_)
     {
@@ -203,7 +218,9 @@ protected:
   /* Computes the 3d volume formed between the possible ZMP area(s) and the CoM of the robot
   TODO this is potentially several convex areas! (caron tro) see how to handle this
   */
-  void computeZMPRegion(Eigen::Vector3d comPosition);
+  void computeZMPRegion(const mc_rbdyn::Robot & robot, const std::vector<mc_rbdyn::Contact> & contacts);
+
+  void computeMomentLessForceCone(const mc_rbdyn::Robot & robot, const std::vector<mc_rbdyn::Contact> & contacts);
 
   // Creates a 6d contact friction cone from the contact surface border points
   // The generators are computed then used to build the Polytope_Rn object which is added to the cones vector
@@ -243,25 +260,6 @@ protected:
   void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
                                     Eigen::MatrixX3d & Normals,
                                     Eigen::VectorXd & Offsets);
-
-  // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
-  void setCurrentContacts()
-  {
-    auto waitForLock = mc_rtc::clock::now();
-    std::lock_guard<std::mutex> lock(contactSetMutex_);
-    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
-    // mc_rtc::log::critical("Region compute thread waited {}ms to get contact lock", lockTime.count());
-    // take the previous set of contacts
-    contactsToRemove_ = activeContacts_;
-    activeContacts_.clear();
-    for(const auto contactName : controllerContacts_)
-    {
-      // add every contact given to the active contacts
-      activeContacts_.emplace(contactName);
-      // every active contact does not need to be removed
-      contactsToRemove_.erase(contactName);
-    }
-  };
 
   Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
 
@@ -357,6 +355,11 @@ protected:
     return CWCMomentTriangles_;
   };
 
+  std::vector<std::array<Eigen::Vector3d, 3>> getCWCMomentLess()
+  {
+    return CWCMomentLessUnCstrTriangles_;
+  };
+
   // std::vector<std::array<Eigen::Vector3d, 3>> getECMPTriangles()
   // {
   //   return eCMPTriangles_;
@@ -374,10 +377,29 @@ protected:
     return zeroMomentTriangles_;
   };
 
-  // ------------------------------------------------------> Internal variables
+protected:
+  // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
+  void setCurrentContacts()
+  {
+    auto waitForLock = mc_rtc::clock::now();
+    std::lock_guard<std::mutex> lock(contactSetMutex_);
+    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
+    // mc_rtc::log::critical("Region compute thread waited {}ms to get contact lock", lockTime.count());
+    // take the previous set of contacts
+    contactsToRemove_ = activeContacts_;
+    activeContacts_.clear();
+    for(const auto contactName : controllerContacts_)
+    {
+      // add every contact given to the active contacts
+      activeContacts_.emplace(contactName);
+      // every active contact does not need to be removed
+      contactsToRemove_.erase(contactName);
+    }
+  };
 
   std::string name_;
   const mc_rbdyn::Robot & robot_;
+  std::vector<mc_rbdyn::Contact> contactsRBDyn_;
   std::set<std::string> possibleContacts_;
   std::set<std::string> activeContacts_;
   std::set<std::string> contactsToRemove_;
@@ -406,6 +428,7 @@ protected:
 
   boost::shared_ptr<Polytope_Rn> zmpRegion_;
   boost::shared_ptr<Polytope_Rn> zeroMomentRegion_;
+  boost::shared_ptr<Polytope_Rn> CWCMomentLessUnCstr_;
 
   // cdd
   // std::vector<std::shared_ptr<Eigen::Polyhedron>> cddFrictionCones_;
@@ -426,6 +449,7 @@ protected:
   std::mutex forcePolyThreadsMutex_;
   std::map<std::string, std::mutex> forcePolyMutexes_;
   std::thread zmpThread_;
+  std::thread cwcMomentLessThread_;
   std::thread minkSumThread_;
   std::atomic<bool> VRPRegionComputed_{true};
   std::mutex VRPPlanesMutex_;
@@ -450,6 +474,7 @@ protected:
   std::mutex CWCMomentTrianglesMutex_;
   std::mutex ZMPTrianglesMutex_;
   std::mutex zeroMomentTrianglesMutex_;
+  std::mutex CWCMomentLessUnCstrTrianglesMutex_;
 
   // Internal matrices of planes and offsets of the regions for constraints
   HRepX3d DCMVRPPlanes_;
@@ -474,6 +499,7 @@ protected:
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> momentPolytopesTrianglesMap_;
   std::vector<std::array<Eigen::Vector3d, 3>> CWCForceTriangles_;
   std::vector<std::array<Eigen::Vector3d, 3>> CWCMomentTriangles_;
+  std::vector<std::array<Eigen::Vector3d, 3>> CWCMomentLessUnCstrTriangles_;
   std::vector<std::array<Eigen::Vector3d, 3>> eCMPTriangles_;
   std::vector<std::array<Eigen::Vector3d, 3>> ZMPTriangles_;
   std::vector<std::array<Eigen::Vector3d, 3>> zeroMomentTriangles_;
