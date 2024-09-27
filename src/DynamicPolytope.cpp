@@ -407,8 +407,8 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // bineq vec is torque upper and lower limits (with negative lower limits) + delta (inertia, coriolis, gravity...)
   Eigen::VectorXd bineq(Aineq.rows());
 
-  bineq.segment(0, jacSize) = delta + upperTorqueLims;
-  bineq.segment(jacSize, jacSize) = (-1.0) * (delta + lowerTorqueLims);
+  bineq.segment(0, jacSize) = delta - lowerTorqueLims;
+  bineq.segment(jacSize, jacSize) = (-1.0) * (delta - upperTorqueLims);
   // mc_rtc::log::info("b ineq:\n{}", bineq.transpose());
 
   // Create a half space from every inequality
@@ -740,7 +740,9 @@ void DynamicPolytope::VRPtranslation(double deltaZ)
   deltaZVector[0] = 0.;
   deltaZVector[1] = 0.;
   deltaZVector[2] = deltaZ;
+  std::lock_guard<std::mutex> lockCWC(CWCMutex_);
   TopGeomTools::translate(CWCForces_, deltaZVector);
+  std::lock_guard<std::mutex> lockZeroMoment(zeroMomentMutex_);
   TopGeomTools::translate(zeroMomentRegion_, deltaZVector);
 }
 
@@ -748,8 +750,7 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
 {
   // XXX dummy zone for now: convex area formed by the polygon envelope of feet + com position
   int dim = 3;
-  std::lock_guard<std::mutex> lock(ZMPMutex_);
-  zmpRegion_->reset();
+  boost::shared_ptr<Polytope_Rn> newZMPPoly(new Polytope_Rn());
 
   // manually adding left foot points
   std::vector<Eigen::Vector3d> generators;
@@ -763,7 +764,7 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
     coords.insert_element(1, lfPoint.translation().y());
     coords.insert_element(2, lfPoint.translation().z());
     gn->setCoordinates(coords);
-    zmpRegion_->addGenerator(gn);
+    newZMPPoly->addGenerator(gn);
   }
 
   // same for right foot points
@@ -777,7 +778,7 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
     coords.insert_element(1, rfPoint.translation().y());
     coords.insert_element(2, rfPoint.translation().z());
     gn->setCoordinates(coords);
-    zmpRegion_->addGenerator(gn);
+    newZMPPoly->addGenerator(gn);
   }
 
   boost::shared_ptr<Generator_Rn> CoMgn(new Generator_Rn(dim));
@@ -786,9 +787,11 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
   coords.insert_element(1, comPosition.y());
   coords.insert_element(2, comPosition.z());
   CoMgn->setCoordinates(coords);
-  zmpRegion_->addGenerator(CoMgn);
+  newZMPPoly->addGenerator(CoMgn);
 
-  DoubleDescriptionFromGenerators::Compute(zmpRegion_, 1000);
+  DoubleDescriptionFromGenerators::Compute(newZMPPoly, 1000);
+  std::lock_guard<std::mutex> lock(ZMPMutex_);
+  zmpRegion_ = newZMPPoly;
 }
 
 void DynamicPolytope::computeZeroMomentIntersection()
@@ -820,7 +823,10 @@ void DynamicPolytope::computeVRPRegionWithMinkSum()
   computeECMPRegion(robot_.com(), robot_);
 
   // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
-  zmpThread_.join();
+  if(zmpThread_.joinable())
+  {
+    zmpThread_.join();
+  }
   computeZeroMomentIntersection();
 
   // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
