@@ -52,7 +52,7 @@ target_include_directories(DynamicPolytope
 target_link_libraries(DynamicPolytope
   PUBLIC
   mc_rtc::mc_control_fsm
-  polito
+  Politopix::polito
   # eigen-cdd::eigen-cdd
 )
 
