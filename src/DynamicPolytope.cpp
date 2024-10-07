@@ -29,6 +29,7 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 
     HRepX3d newPlanes;
     frictionConesPlanes_.emplace(contact, newPlanes);
+    forcePolyPlanes_.emplace(contact, newPlanes);
 
     refContactPoses_.emplace(contact, robot_.surfacePose(contact));
 
@@ -146,9 +147,12 @@ void DynamicPolytope::computeRegions()
       feasiblePolytopesThreads_.erase(contactName);
       feasiblePolytopesThreadsMutex_.unlock();
 
-      std::lock_guard<std::mutex> lock(getContactMutex(frictionConesPlanesMutexes_, contactName));
+      std::lock_guard<std::mutex> lockFriction(getContactMutex(frictionConesPlanesMutexes_, contactName));
       updatePlanesMatrixConstraint(frictionCones_.at(contactName), frictionConesPlanes_.at(contactName).first,
                                    frictionConesPlanes_.at(contactName).second);
+      std::lock_guard<std::mutex> lockFeasible(getContactMutex(forcePolyPlanesMutexes_, contactName));
+      updatePlanesMatrixConstraint(forcePolytopes_.at(contactName), forcePolyPlanes_.at(contactName).first,
+                                   forcePolyPlanes_.at(contactName).second);
     }
 
     dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;

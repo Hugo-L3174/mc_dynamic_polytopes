@@ -157,11 +157,18 @@ struct DynamicPolytope
   };
 
   // Returns the desired cone H representation
-  // Given by copy here, might be dangerous by const ref because of threading computation
-  const HRepX3d & getConePlanes(const std::string & contactName)
+  // Prefer using the force polytope planes if they are computed
+  const HRepX3d & getFrictionConePlanes(const std::string & contactName)
   {
     std::lock_guard<std::mutex> lock(getContactMutex(frictionConesPlanesMutexes_, contactName));
     return frictionConesPlanes_.at(contactName);
+  };
+
+  // Returns the desired contact force polytope H representation
+  const HRepX3d & getForcePolyPlanes(const std::string & contactName)
+  {
+    std::lock_guard<std::mutex> lock(getContactMutex(forcePolyPlanesMutexes_, contactName));
+    return forcePolyPlanes_.at(contactName);
   };
 
   // Projects the given point on the VRP region. Returns the given point if it is already inside
@@ -431,6 +438,7 @@ protected:
   std::mutex VRPPlanesMutex_;
   std::mutex zeroMomentPlanesMutex_;
   std::map<std::string, std::mutex> frictionConesPlanesMutexes_;
+  std::map<std::string, std::mutex> forcePolyPlanesMutexes_;
 
   std::mutex CWCMutex_;
   std::mutex ZMPMutex_;
@@ -457,6 +465,7 @@ protected:
   HRepX3d zeroMomentPlanes_;
 
   std::map<std::string, HRepX3d> frictionConesPlanes_;
+  std::map<std::string, HRepX3d> forcePolyPlanes_;
 
   // timers to measure computation times
   mc_rtc::duration_ms dt_loop_total_;
