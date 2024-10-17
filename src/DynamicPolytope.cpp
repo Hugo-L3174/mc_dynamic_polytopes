@@ -328,11 +328,6 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
 
-  /* Questions to answer:
-  - Do I need 6d then use only half, or can I have 3d from the beginning?
-  - Do I need sparse matrix or can I use dense matrix? probably dense is ok since decoupled
-    Compute with full then check if result is different with dense
-  */
   const int n_var = 6;
   // Removing underactuated dofs
   const int jacSize = robot.mb().nrDof() - 6;
@@ -350,10 +345,6 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // Dense jacobian
   Eigen::MatrixXd denseJac = jac.bodyJacobian(robot.mb(), robot.mbc());
   // mc_rtc::log::info("Dense Jacobian: \n{}", denseJac);
-
-  // rotate + transpose dense jacobian
-  // Eigen::MatrixXd denseJacT = (sva::PTransformd(X_s_b.rotation()).matrix() * denseJac).transpose();
-  // mc_rtc::log::info("Dense Jacobian transposed + rotated: \n{}", denseJacT);
 
   // Allocate then fill sparse jacobian
   Eigen::MatrixXd fullJac = Eigen::MatrixXd::Zero(6, robot.mb().nrDof());
@@ -379,10 +370,6 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   forwardDyn.computeC(robot.mb(), robot.mbc());
   Eigen::VectorXd coriolisVec = forwardDyn.C();
 
-  // Joint vectors
-  const Eigen::VectorXd qdot = rbd::dofToVector(robot.mb(), robot.mbc().alpha);
-  const Eigen::VectorXd qddot = rbd::dofToVector(robot.mb(), robot.mbc().alphaD);
-
   // Aineq matrix is jacobian transpose block to transform wrench vec to joint torque (x2 with second one negative
   // for being over the lower torque limits)
   // We also take only the bottom blocks without top 6 to remove underactuated part
@@ -395,18 +382,25 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   Eigen::VectorXd upperTorqueLims = rbd::dofToVector(robot.mb(), robot.tu()).segment(6, jacSize);
   Eigen::VectorXd lowerTorqueLims = rbd::dofToVector(robot.mb(), robot.tl()).segment(6, jacSize);
 
-  // Gravity vector
-  Eigen::VectorXd gravVector(jacSize);
-  gravVector.fill(-9.81);
+  // Joint vectors
+  const Eigen::VectorXd qdot = rbd::dofToVector(robot.mb(), robot.mbc().alpha);
+  const Eigen::VectorXd qddot = rbd::dofToVector(robot.mb(), robot.mbc().alphaD);
 
-  // delta: might only need C and H from FD (already have all the elements), then remove top 6 rows
-  // Inertia body transpose * body vel? + Inertia* qdotdot + coriolis+ g(q)
-  // XXX check validity of this term
-  Eigen::VectorXd delta = inertiaMat.bottomRows(jacSize) + coriolisVec.bottomRows(jacSize);
+  // Inertia body/joint term transpose * floating base acc + Inertia * qdotdot + (coriolis+ g(q))
+  Eigen::VectorXd delta =
+      /*inertiaMat.bottomRows(jacSize).leftCols(6) * robot.accW().vector() +*/ inertiaMat.bottomRows(jacSize) * qddot
+      + coriolisVec.bottomRows(jacSize);
   // mc_rtc::log::info("delta:\n{}", delta.transpose());
-  // mc_rtc::log::info("inertia is {} rows and {} cols, dofs are {}", delta.rows(), delta.cols(), robot.mb().nrDof());
+  // mc_rtc::log::info("inertia is {} rows and {} cols", inertiaMat.bottomRows(jacSize).rows(),
+  // inertiaMat.bottomRows(jacSize).cols()); mc_rtc::log::info("inertia*qddot is {} rows and {} cols",
+  // (inertiaMat.bottomRows(jacSize) * qddot).rows(), (inertiaMat.bottomRows(jacSize)* qddot).cols());
+  // mc_rtc::log::info("inertia underact is {} rows and {} cols =\n{}",
+  // (inertiaMat.bottomRows(jacSize).leftCols(6)).rows(), (inertiaMat.bottomRows(jacSize).leftCols(6)).cols(),
+  // inertiaMat.bottomRows(jacSize).leftCols(6)); mc_rtc::log::info("inertia underact T * qdotunderact is {} rows and {}
+  // cols", (inertiaMat.bottomRows(jacSize).leftCols(6) * robot.accW().vector()).rows(),
+  // (inertiaMat.bottomRows(jacSize).leftCols(6).transpose() * robot.accW().vector()).cols());
   // mc_rtc::log::info("coriolis mat is {} rows and {} cols", coriolisMat.rows(), coriolisMat.cols());
-  // mc_rtc::log::info("coriolis vec is {} rows", coriolisVec.size());
+  // mc_rtc::log::info("coriolis vec is {} rows", coriolisVec.bottomRows(jacSize).size());
 
   // bineq vec is torque upper and lower limits (with negative lower limits) + delta (inertia, coriolis, gravity...)
   Eigen::VectorXd bineq(Aineq.rows());
@@ -691,7 +685,10 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
 
   try
   {
-    MinkowskiSum Mink(polytopesForces, newForcePoly);
+    if(!polytopesForces.empty())
+    {
+      MinkowskiSum Mink(polytopesForces, newForcePoly);
+    }
     std::lock_guard<std::mutex> lock(CWCMutex_);
     CWCForces_.reset();
     CWCForces_ = newForcePoly;
@@ -756,35 +753,23 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newZMPPoly(new Polytope_Rn());
 
-  // manually adding left foot points
   std::vector<Eigen::Vector3d> generators;
-  auto lfPoints = robot_.surface("LeftFoot").points();
-  for(auto lfPoint : lfPoints)
+  const std::string contactTest = "LeftFoot";
+  for(const auto & contact : activeContacts_)
   {
-    lfPoint = lfPoint * robot_.surface("LeftFoot").X_0_s(robot_);
-    boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
-    boost::numeric::ublas::vector<double> coords(3);
-    coords.insert_element(0, lfPoint.translation().x());
-    coords.insert_element(1, lfPoint.translation().y());
-    coords.insert_element(2, lfPoint.translation().z());
-    gn->setCoordinates(coords);
-    newZMPPoly->addGenerator(gn);
+    auto cPoints = robot_.surface(contact).points();
+    for(auto cPoint : cPoints)
+    {
+      cPoint = cPoint * robot_.surface(contact).X_0_s(robot_);
+      boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
+      boost::numeric::ublas::vector<double> coords(3);
+      coords.insert_element(0, cPoint.translation().x());
+      coords.insert_element(1, cPoint.translation().y());
+      coords.insert_element(2, cPoint.translation().z());
+      gn->setCoordinates(coords);
+      newZMPPoly->addGenerator(gn);
+    }
   }
-
-  // same for right foot points
-  auto rfPoints = robot_.surface("RightFoot").points();
-  for(auto rfPoint : rfPoints)
-  {
-    rfPoint = rfPoint * robot_.surface("RightFoot").X_0_s(robot_);
-    boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
-    boost::numeric::ublas::vector<double> coords(3);
-    coords.insert_element(0, rfPoint.translation().x());
-    coords.insert_element(1, rfPoint.translation().y());
-    coords.insert_element(2, rfPoint.translation().z());
-    gn->setCoordinates(coords);
-    newZMPPoly->addGenerator(gn);
-  }
-
   boost::shared_ptr<Generator_Rn> CoMgn(new Generator_Rn(dim));
   boost::numeric::ublas::vector<double> coords(3);
   coords.insert_element(0, comPosition.x());
