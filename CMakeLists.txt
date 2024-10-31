@@ -1,21 +1,30 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CXX_DISABLE_WERROR 1)
 set(CMAKE_CXX_STANDARD 11)
 
 set(PROJECT_NAME mc_dynamic_polytopes)
-set(PROJECT_DESCRIPTION "mc_dynamic_polytopes")
+set(PROJECT_VERSION 0.1.0)
+set(PROJECT_DESCRIPTION "")
 set(PROJECT_URL "")
 
-project(${PROJECT_NAME} CXX)
+# jrl-cmakemodules minimal settings
+set(PROJECT_USE_CMAKE_EXPORT TRUE)
+set(CXX_DISABLE_WERROR 1)
+
+include(cmake/base.cmake)
+
+project(${PROJECT_NAME} LANGUAGES CXX VERSION ${PROJECT_VERSION})
+
+# cmake macro for project dependencies
+add_project_dependency(polito REQUIRED NO_MODULE)
 
 # Check if the project is built inside mc_rtc
 if(NOT TARGET mc_rtc::mc_control)
   find_package(mc_rtc REQUIRED)
 endif()
 
-find_package(polito REQUIRED)
 # for cdd computations if any
 # find_package(eigen-cdd REQUIRED)
 
@@ -58,18 +67,12 @@ target_link_libraries(DynamicPolytope
 
 #### Exporting targets and installing ####
 
-include(GNUInstallDirs)
-install(TARGETS DynamicPolytope
-    EXPORT DynamicPolytope-export
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/
-)
-
-install(EXPORT DynamicPolytope-export
-  FILE mc_dynamic_polytopesConfig.cmake
-  NAMESPACE mc_dynamic_polytopes::
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/mc_dynamic_polytopes
-)
+install(
+  TARGETS DynamicPolytope
+  EXPORT "${TARGETS_EXPORT_NAME}"
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 install(DIRECTORY include/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mc_dynamic_polytopes
