@@ -34,6 +34,10 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     refContactPoses_.emplace(contact, robot_.surfacePose(contact));
 
     ContactTimers newTimers;
+    newTimers.dt_contactTotal = mc_rtc::duration_ms::zero();
+    newTimers.dt_forcePolytope = mc_rtc::duration_ms::zero();
+    newTimers.dt_frictionCone = mc_rtc::duration_ms::zero();
+    newTimers.dt_intersection = mc_rtc::duration_ms::zero();
     contactsTimers_.emplace(contact, newTimers);
   }
   // init CWC polytope
@@ -227,7 +231,7 @@ void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionS
   // mc_rtc::log::info("Hrep dims are {} rows, {} columns", Hrep.rows(), Hrep.cols());
 
   // Adding the planes as the H-representation of the cone directly
-  for(size_t i = 0; i < Hrep.rows(); i++)
+  for(auto i = 0; i < Hrep.rows(); i++)
   {
     boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
     boost::numeric::ublas::vector<double> normal(3);
@@ -323,7 +327,7 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
 void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contactName,
                                                         const mc_rbdyn::Robot & robot,
                                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                                        std::mutex & forceConeMutex)
+                                                        std::mutex & forcePolyMutex)
 {
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
@@ -1044,7 +1048,7 @@ void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polyt
 {
   // XXX might be interesting to use a vector of mc_rbdyn::Plane in the future ? but matrixXd would be easier to put in
   // blocks in a handmade QP where if planes we would need a for loop on every plane to fill the QP matrix
-  auto nbOfPlanes = polytope->numberOfHalfSpaces();
+  int nbOfPlanes = polytope->numberOfHalfSpaces();
   Normals.resize(nbOfPlanes, 3);
   Offsets.resize(nbOfPlanes);
 
