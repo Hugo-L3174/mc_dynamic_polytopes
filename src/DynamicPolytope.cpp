@@ -332,32 +332,11 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
 
+  bool HrepMode = false;
+
   const int n_var = 6;
   // Removing underactuated dofs
   const int jacSize = robot.mb().nrDof() - 6;
-
-  // Correct jacobian building needs names because we need to link the surface to a body and compute the jac of the body
-  // + transform between surface and the body
-  const mc_rbdyn::Surface & surface = robot.surface(contactName);
-  std::string bodyName = surface.bodyName();
-  sva::PTransformd X_s_b;
-
-  X_s_b = robot.bodyPosW(bodyName) * (robot.surfacePose(contactName).inv());
-
-  // Building jacobian to the contact frame
-  rbd::Jacobian jac(robot.mb(), bodyName, X_s_b.inv().translation());
-  // Dense jacobian
-  Eigen::MatrixXd denseJac = jac.bodyJacobian(robot.mb(), robot.mbc());
-  // mc_rtc::log::info("Dense Jacobian: \n{}", denseJac);
-
-  // Allocate then fill sparse jacobian
-  Eigen::MatrixXd fullJac = Eigen::MatrixXd::Zero(6, robot.mb().nrDof());
-  jac.fullJacobian(robot.mb(), denseJac, fullJac);
-  // mc_rtc::log::info("Sparse Jacobian: \n{}", fullJac);
-
-  // rotate to contact frame + transpose for correct calculation
-  const Eigen::MatrixXd fullJacT = (sva::PTransformd(X_s_b.rotation()).matrix() * fullJac).transpose();
-  // mc_rtc::log::info("Sparse jacobian transposed and rotated to surface frame: \n{}", fullJacT);
 
   // Computing dynamics terms of the equation of motion
   rbd::ForwardDynamics forwardDyn(robot.mb());
@@ -374,71 +353,242 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   forwardDyn.computeC(robot.mb(), robot.mbc());
   Eigen::VectorXd coriolisVec = forwardDyn.C();
 
-  // Aineq matrix is jacobian transpose block to transform wrench vec to joint torque (x2 with second one negative
-  // for being over the lower torque limits)
-  // We also take only the bottom blocks without top 6 to remove underactuated part
-  Eigen::MatrixXd Aineq(2 * jacSize, n_var);
-  Aineq.block(0, 0, jacSize, n_var) = fullJacT.block(6, 0, jacSize, 6);
-  Aineq.block(jacSize, 0, jacSize, n_var) = -fullJacT.block(6, 0, jacSize, 6);
-  // mc_rtc::log::info("A ineq: \n{}", Aineq);
+  // Correct jacobian building needs names because we need to link the surface to a body and compute the jac of the body
+  // + transform between surface and the body
+  const mc_rbdyn::Surface & surface = robot.surface(contactName);
+  std::string bodyName = surface.bodyName();
+  sva::PTransformd X_s_b = robot.bodyPosW(bodyName) * (robot.surfacePose(contactName).inv());
+
+  // XXX check if need transformation between body and frame OR between 0 and frame !
+  // XXX here I used the bodyJacobian to be already in the body frame but is this correct?
+  // Building jacobian to the contact frame
+  rbd::Jacobian jac(robot.mb(), bodyName, X_s_b.inv().translation());
+
+  // Dense jacobian
+  Eigen::MatrixXd denseJac = jac.bodyJacobian(robot.mb(), robot.mbc());
+  Eigen::MatrixXd denseJacDot = jac.bodyJacobianDot(robot.mb(), robot.mbc());
+  // mc_rtc::log::info("Dense Jacobian: \n{}", denseJac);
+
+  // Allocate then fill sparse jacobian
+  Eigen::MatrixXd globalFullJac = Eigen::MatrixXd::Zero(6, robot.mb().nrDof());
+  jac.fullJacobian(robot.mb(), denseJac, globalFullJac);
+  Eigen::MatrixXd globalFullJacDot = Eigen::MatrixXd::Zero(6, robot.mb().nrDof());
+  jac.fullJacobian(robot.mb(), denseJacDot, globalFullJacDot);
+  // mc_rtc::log::info("Sparse Jacobian: \n{}", globalFullJac);
+
+  // rotate to contact frame
+  const Eigen::MatrixXd contactFullJac = sva::PTransformd(X_s_b.rotation()).matrix() * globalFullJac;
+  // XXX to check ! simple rotation if jacDot matrix?
+  const Eigen::MatrixXd contactFullJacDot = sva::PTransformd(X_s_b.rotation()).matrix() * globalFullJacDot;
+  // transpose for correct calculation
+  const Eigen::MatrixXd contactFullJacT = contactFullJac.transpose();
+  // mc_rtc::log::info("Sparse jacobian transposed and rotated to surface frame: \n{}", contactFullJacT);
 
   // Torque limits vectors
-  Eigen::VectorXd upperTorqueLims = rbd::dofToVector(robot.mb(), robot.tu()).segment(6, jacSize);
-  Eigen::VectorXd lowerTorqueLims = rbd::dofToVector(robot.mb(), robot.tl()).segment(6, jacSize);
+  Eigen::VectorXd upperTorqueLims = rbd::dofToVector(robot.mb(), robot.tu());
+  Eigen::VectorXd lowerTorqueLims = rbd::dofToVector(robot.mb(), robot.tl());
+  Eigen::VectorXd upperTorqueLimsNoFloatingBase = rbd::dofToVector(robot.mb(), robot.tu()).segment(6, jacSize);
+  Eigen::VectorXd lowerTorqueLimsNoFloatingBase = rbd::dofToVector(robot.mb(), robot.tl()).segment(6, jacSize);
 
   // Joint vectors
   const Eigen::VectorXd qdot = rbd::dofToVector(robot.mb(), robot.mbc().alpha);
   const Eigen::VectorXd qddot = rbd::dofToVector(robot.mb(), robot.mbc().alphaD);
 
-  // Inertia body/joint term transpose * floating base acc + Inertia * qdotdot + (coriolis+ g(q))
-  Eigen::VectorXd delta =
-      /*inertiaMat.bottomRows(jacSize).leftCols(6) * robot.accW().vector() +*/ inertiaMat.bottomRows(jacSize) * qddot
-      + coriolisVec.bottomRows(jacSize);
-  // mc_rtc::log::info("delta:\n{}", delta.transpose());
-  // mc_rtc::log::info("inertia is {} rows and {} cols", inertiaMat.bottomRows(jacSize).rows(),
-  // inertiaMat.bottomRows(jacSize).cols()); mc_rtc::log::info("inertia*qddot is {} rows and {} cols",
-  // (inertiaMat.bottomRows(jacSize) * qddot).rows(), (inertiaMat.bottomRows(jacSize)* qddot).cols());
-  // mc_rtc::log::info("inertia underact is {} rows and {} cols =\n{}",
-  // (inertiaMat.bottomRows(jacSize).leftCols(6)).rows(), (inertiaMat.bottomRows(jacSize).leftCols(6)).cols(),
-  // inertiaMat.bottomRows(jacSize).leftCols(6)); mc_rtc::log::info("inertia underact T * qdotunderact is {} rows and {}
-  // cols", (inertiaMat.bottomRows(jacSize).leftCols(6) * robot.accW().vector()).rows(),
-  // (inertiaMat.bottomRows(jacSize).leftCols(6).transpose() * robot.accW().vector()).cols());
-  // mc_rtc::log::info("coriolis mat is {} rows and {} cols", coriolisMat.rows(), coriolisMat.cols());
-  // mc_rtc::log::info("coriolis vec is {} rows", coriolisVec.bottomRows(jacSize).size());
+  // XXX tentative selection vector for contact by using the contact jacobian
+  Eigen::VectorXd actuatorSelectionVector = Eigen::VectorXd::Zero(robot.mb().nrDof());
+  int numberOfActuatorsPlaying = 0;
 
-  // bineq vec is torque upper and lower limits (with negative lower limits) + delta (inertia, coriolis, gravity...)
-  Eigen::VectorXd bineq(Aineq.rows());
-
-  bineq.segment(0, jacSize) = delta - lowerTorqueLims;
-  bineq.segment(jacSize, jacSize) = (-1.0) * (delta - upperTorqueLims);
-  // mc_rtc::log::info("b ineq:\n{}", bineq.transpose());
-
-  // Create a half space from every inequality
-  for(size_t i = 0; i < jacSize * 2; i++)
+  for(int i = 0; i < robot.mb().nrDof(); i++)
   {
-    // Add half space only if row is not null, ie only if this dof plays into the contact force (reduces nb of planes to
-    // simplify in polytope)
-    if(!Aineq.row(i).isZero())
+    if(!contactFullJac.col(i).isZero())
     {
-      boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
-      boost::numeric::ublas::vector<double> coefficients(3);
-      // Setting coefficients as force elements of the ineq matrix (3 last columns)
-      coefficients.insert_element(0, Aineq.coeff(i, 3));
-      coefficients.insert_element(1, Aineq.coeff(i, 4));
-      coefficients.insert_element(2, Aineq.coeff(i, 5));
-      hs->setCoefficients(coefficients);
-      hs->setConstant(bineq.coeff(i));
-      newPoly->addHalfSpace(hs);
+      actuatorSelectionVector(i) = Eigen::Index(1);
+      numberOfActuatorsPlaying++;
     }
   }
-  auto start_DD = mc_rtc::clock::now();
-  // Compute double description from half spaces (not generators -> truncation with bounding box)
-  politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 2000);
-  mc_rtc::duration_ms end_DD = mc_rtc::clock::now() - start_DD;
-  // mc_rtc::log::info("time to run force poly DD : {}ms", end_DD.count());
+  // mc_rtc::log::info("Actuator vector for {} is \n{}", contactName, actuatorSelectionVector);
 
-  // lock cone mutex, then reset cone pointer to newly computed cone
-  std::lock_guard<std::mutex> lock(forceConeMutex);
+  /***************************************************/
+  // Hrep version
+
+  if(HrepMode)
+  {
+    // Aineq matrix is jacobian transpose block to transform wrench vec to joint torque (x2 with second one negative
+    // for being over the lower torque limits)
+    // We also take only the bottom blocks without top 6 to remove underactuated part
+    Eigen::MatrixXd Aineq(2 * jacSize, n_var);
+    Aineq.block(0, 0, jacSize, n_var) = contactFullJacT.block(6, 0, jacSize, 6);
+    Aineq.block(jacSize, 0, jacSize, n_var) = -contactFullJacT.block(6, 0, jacSize, 6);
+    // mc_rtc::log::info("A ineq: \n{}", Aineq);
+
+    // Inertia floating base * floating base acc + Inertia without coupling terms * qdotdot + (coriolis+ g(q))
+
+    Eigen::VectorXd delta = inertiaMat.bottomRows(jacSize).leftCols(6) * robot.accW().vector()
+                            + inertiaMat.bottomRows(jacSize).rightCols(jacSize) * qddot.segment(6, jacSize)
+                            + coriolisVec.bottomRows(jacSize);
+    // mc_rtc::log::info("delta {} is\n{}", contactName, delta);
+
+    // bineq vec is torque upper and lower limits (with negative lower limits) + delta (inertia, coriolis, gravity...)
+    Eigen::VectorXd bineq(Aineq.rows());
+
+    bineq.segment(0, jacSize) = delta - lowerTorqueLimsNoFloatingBase;
+    bineq.segment(jacSize, jacSize) = (-1.0) * (delta - upperTorqueLimsNoFloatingBase);
+    // mc_rtc::log::info("b ineq:\n{}", bineq.transpose());
+
+    // Create a half space from every inequality
+    for(auto i = 0; i < jacSize * 2; i++)
+    {
+      // Add half space only if row is not null, ie only if this dof plays into the contact force (reduces nb of planes
+      // to simplify in polytope)
+      if(!Aineq.row(i).isZero())
+      {
+        boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
+        boost::numeric::ublas::vector<double> coefficients(3);
+        // Setting coefficients as force elements of the ineq matrix (3 last columns)
+        coefficients.insert_element(0, Aineq.coeff(i, 3));
+        coefficients.insert_element(1, Aineq.coeff(i, 4));
+        coefficients.insert_element(2, Aineq.coeff(i, 5));
+        hs->setCoefficients(coefficients);
+        hs->setConstant(bineq.coeff(i));
+        newPoly->addHalfSpace(hs);
+      }
+    }
+    auto start_DD = mc_rtc::clock::now();
+    // Compute double description from half spaces (not generators -> truncation with bounding box)
+    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 5000);
+    // mc_rtc::log::info("DD force poly for {} finished with {} gens and {} hs", contactName,
+    //                   newPoly->numberOfGenerators(), newPoly->numberOfHalfSpaces());
+    mc_rtc::duration_ms end_DD = mc_rtc::clock::now() - start_DD;
+    // mc_rtc::log::info("time to run force poly DD : {}ms", end_DD.count());
+  }
+
+  /***************************************************/
+  // Vrep version
+
+  else
+  {
+    // Operational space inertia matrix (OSIM) is (J*M^-1*J^T)^-1
+    Eigen::MatrixXd OSIM = (contactFullJac * inertiaMat.inverse() * contactFullJacT).inverse();
+    // contactFullJac dim is (40, 6)
+    // inertiaMat dim is (40, 40)
+    // contactFullJacT dim is (6, 40)
+    // OSIM dim is (6, 6)
+
+    // Dynamically consistant inverse jacobian (DCIJ) is M^-1*J^T*OSIM
+    // Transposed is equal to OSIM*J*M^-1 because OSIM and joint space inertia matrix are symmetric
+    Eigen::MatrixXd DCIJ_T = OSIM * contactFullJac * inertiaMat.inverse();
+    // DCIJ_T dims are (6, 40)
+
+    // mc_rtc::log::info("contactFullJac transposed is :\n{}", contactFullJac.transpose());
+    /* vertices force polytope are gotten with torque limits vertices
+    f = -(JM^-1J^T)^-1JM^-1 * tau + (JM^-1J^T)^-1JM^-1 * C - (JM^-1J^T)^-1*\dot(J)*\dot(q)
+    --> f = -DCIJ_T * tau + DCIJ_T * C - OSIM * \dot(J) * \dot(q)
+    */
+
+    // XXX check matrix dimensions: maybe need bottom row jacSize ?
+    Eigen::VectorXd constant = DCIJ_T * coriolisVec - OSIM * contactFullJacDot * qdot;
+
+    // Now loop between every combination of min and max torques to get the corresponding 6D wrench
+    // Then take only last 3 elements to get the force vertex and add it as generator
+
+    // For the combinations: use only the selected torque extrema (from the actuators of the limb) (2^n combinations and
+    // n = nb of actuators)
+    auto selectedUpperTorqueLims = actuatorSelectionVector.cwiseProduct(upperTorqueLims);
+    auto selectedLowerTorqueLims = actuatorSelectionVector.cwiseProduct(lowerTorqueLims);
+    // mc_rtc::log::info("upper torque lims {} are \n{}", contactName, selectedUpperTorqueLims);
+    // mc_rtc::log::info("lower torque lims {} are \n{}", contactName, selectedLowerTorqueLims);
+
+    // Lambda to generate combinations
+    auto generateCombinations = [](const Eigen::VectorXd & minVec,
+                                   const Eigen::VectorXd & maxVec) -> std::vector<Eigen::VectorXd>
+    {
+      int n = minVec.size();
+
+      // Combine only selected elements : others are given minVec values (I assume they are 0)
+      std::vector<int> variableIndices;
+      Eigen::VectorXd fixedValues(n);
+      for(int i = 0; i < n; i++)
+      {
+        if(minVec[i] == maxVec[i])
+        {
+          fixedValues[i] = minVec[i];
+        }
+        else
+        {
+          // These are the elements that need to be combined
+          variableIndices.push_back(i);
+        }
+      }
+
+      int nbActuatorsPlaying = variableIndices.size();
+      int nbOfCombinations = pow(2, nbActuatorsPlaying);
+      std::vector<Eigen::VectorXd> combinations;
+
+      for(int i = 0; i < nbOfCombinations; i++)
+      {
+        // Start new combination by putting fixed values (variable values are still not set)
+        Eigen::VectorXd combination = fixedValues;
+
+        for(int j = 0; j < nbActuatorsPlaying; j++)
+        {
+          int index = variableIndices[j];
+          // Make a combination using either minVec[index] or maxVec[index] depending on j-th bit of i
+          combination[index] = (i & (1 << j)) ? maxVec[index] : minVec[index];
+        }
+        combinations.push_back(combination);
+      }
+      return combinations;
+    };
+
+    // Generate all torque extrema combinations
+    std::vector<Eigen::VectorXd> torqueExtremaCombinations =
+        generateCombinations(selectedLowerTorqueLims, selectedUpperTorqueLims);
+
+    // mc_rtc::log::info("There are {} combinations", torqueExtremaCombinations.size());
+
+    // Compute resulting force for every combination and add it as vertex for polytope before DD
+    int itCounter = 0;
+    for(const auto & torqueCombination : torqueExtremaCombinations)
+    {
+      // mc_rtc::log::info("torque combination vector for {} is \n{}", contactName, torqueCombination);
+      Eigen::VectorXd wrenchVertex = -DCIJ_T * torqueCombination + constant;
+      // mc_rtc::log::info("Wrench vertex {} for {} is {}", itCounter, contactName,
+      //                   wrenchVertex.segment(3, 3).transpose());
+
+      // Create new poly generator
+      boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
+      boost::numeric::ublas::vector<double> coords(3);
+      // Insert force elements (3, 4, 5 of wrench 6D vector)
+      coords.insert_element(0, wrenchVertex.coeff(3));
+      coords.insert_element(1, wrenchVertex.coeff(4));
+      coords.insert_element(2, wrenchVertex.coeff(5));
+      gn->setCoordinates(coords);
+      newPoly->addGenerator(gn);
+      itCounter++;
+    }
+
+    auto start_DD = mc_rtc::clock::now();
+    // Compute double description from generators
+    DoubleDescriptionFromGenerators::Compute(newPoly, 10000);
+
+    // mc_rtc::log::info("After DD poly {} has {} vertices", contactName, newPoly->numberOfGenerators());
+    // for(int vertex = 0; vertex < newPoly->numberOfGenerators(); vertex++)
+    // {
+    //   Eigen::Vector3d thisVertex(newPoly->getGenerator(vertex)->getCoordinate(0),
+    //                              newPoly->getGenerator(vertex)->getCoordinate(1),
+    //                              newPoly->getGenerator(vertex)->getCoordinate(2));
+    //   mc_rtc::log::info("Vertex {} of {} at {}", vertex, contactName, thisVertex.transpose());
+    // }
+
+    // mc_rtc::log::info("Topo ok {}? {}", contactName, newPoly->checkTopologyAndGeometry());
+
+    mc_rtc::duration_ms end_DD = mc_rtc::clock::now() - start_DD;
+    // mc_rtc::log::info("time to run force poly DD : {}ms", end_DD.count());
+  }
+
+  // mc_rtc::log::info("Force polytope of {} is ok? {}", contactName, checkGravityCenterInPolytope(newPoly));
+  // lock poly mutex, then reset poly pointer to newly computed poly
+  std::lock_guard<std::mutex> lock(forcePolyMutex);
   actuationPolytope.reset();
   actuationPolytope = newPoly;
 }
@@ -669,6 +819,7 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
 
   // protecting set of contact names
   contactSetMutex_.lock();
+  // mc_rtc::log::info("Starting to add polytopes for mink sum");
   for(const auto & active : activeContacts_)
   {
     boost::shared_ptr<Polytope_Rn> newContactPoly(new Polytope_Rn());
@@ -677,6 +828,8 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
     // Copying the contact polytopes to use for mink computation
     getContactMutex(forcePolyMutexes_, active).lock();
     politopixAPI::copyPolytope(forcePolytopes_.at(active), newContactPoly);
+    // mc_rtc::log::info("Adding poly with {} gens and {} hs", newContactPoly->numberOfGenerators(),
+    //                   newContactPoly->numberOfHalfSpaces());
     getContactMutex(forcePolyMutexes_, active).unlock();
 
     polytopesForces.emplace_back(newContactPoly);
@@ -774,6 +927,22 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
       newZMPPoly->addGenerator(gn);
     }
   }
+
+  // Use this to test only one contact
+  /*
+  auto cPoints = robot_.surface(contactTest).points();
+  for(auto cPoint : cPoints)
+  {
+    cPoint = cPoint * robot_.surface(contactTest).X_0_s(robot_);
+    boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
+    boost::numeric::ublas::vector<double> coords(3);
+    coords.insert_element(0, cPoint.translation().x());
+    coords.insert_element(1, cPoint.translation().y());
+    coords.insert_element(2, cPoint.translation().z());
+    gn->setCoordinates(coords);
+    newZMPPoly->addGenerator(gn);
+  }
+  */
   boost::shared_ptr<Generator_Rn> CoMgn(new Generator_Rn(dim));
   boost::numeric::ublas::vector<double> coords(3);
   coords.insert_element(0, comPosition.x());
