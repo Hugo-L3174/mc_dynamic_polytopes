@@ -331,6 +331,8 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 {
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
+  // New poly var to try running DD a second time
+  boost::shared_ptr<Polytope_Rn> newNewPolyPolitopix(new Polytope_Rn());
 
   bool HrepMode = false;
 
@@ -567,9 +569,35 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
       itCounter++;
     }
 
+    // Half-space intermediate vars
+    boost::shared_ptr<HalfSpace_Rn> HS;
+    double val;
+
     auto start_DD = mc_rtc::clock::now();
     // Compute double description from generators
     DoubleDescriptionFromGenerators::Compute(newPoly, 10000);
+
+    // Trying to reuse half spaces of the computed poly to run a new DD (less buggy from H-rep)
+    int numberOfHalfSpacesPolitopix = newPoly->numberOfHalfSpaces();
+
+    // Recopy all half-spaces in a new poly
+    for(int hs_count = 0; hs_count < numberOfHalfSpacesPolitopix; hs_count++)
+    {
+      HS.reset(new HalfSpace_Rn(3));
+      // The second member b
+      val = newPoly->getHalfSpace(hs_count)->getConstant();
+      HS->setConstant(val);
+      // The normal vector
+      for(int coord_count = 0; coord_count < 3; coord_count++)
+      {
+        val = newPoly->getHalfSpace(hs_count)->getCoefficient(coord_count);
+        HS->setCoefficient(coord_count, val);
+      }
+      newNewPolyPolitopix->addHalfSpace(HS);
+    }
+
+    // Now newNewPoly is a polytope with only the H-rep, try to run DD on it
+    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newNewPolyPolitopix, 5000);
 
     // mc_rtc::log::info("After DD poly {} has {} vertices", contactName, newPoly->numberOfGenerators());
     // for(int vertex = 0; vertex < newPoly->numberOfGenerators(); vertex++)
@@ -590,7 +618,9 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // lock poly mutex, then reset poly pointer to newly computed poly
   std::lock_guard<std::mutex> lock(forcePolyMutex);
   actuationPolytope.reset();
-  actuationPolytope = newPoly;
+  actuationPolytope = newNewPolyPolitopix;
+  // XXX does not seem to work? super small polytopes
+  // actuationPolytope = newNewPolyCDD;
 }
 
 void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
