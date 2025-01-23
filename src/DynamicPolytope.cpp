@@ -1285,7 +1285,8 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
                    mc_rtc::gui::NumberSlider(
                        fmt::format(contact + " force alpha [0-1]"),
                        [this, contact]() { return getForceScalingFactor(contact); },
-                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.0, 1.0));
+                       // scale min at 0.01 instead of 0 to avoid handling zero polytope
+                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.01, 1.0));
   }
 
   for(const auto contact : possibleContacts_)
