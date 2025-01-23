@@ -121,17 +121,19 @@ struct DynamicPolytope
   // compute the force polytope of the contact from the wrench limits of the limb actuating it
   // args should be a polytope pointer/ref and a way to structure the limb Jacobian (only for a chosen limb)
   // think about how to compute bounds if jac non diagonal (redundancy): orso2018ral says QP? or LP?
-  // also if not considering zero vel and acc how to use inertia matrix elements
+  // now also taking a scale factor (0-1) for force
   void buildActuationPolytopeFromContact(const std::string contactName,
                                          const mc_rbdyn::Robot & robot,
                                          boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                         std::mutex & forcePolyMutex);
+                                         std::mutex & forcePolyMutex,
+                                         double forceScalingFactor);
 
   // compute friction cone and force polytope, then intersect both into the friction cone object
   void buildFeasiblePolytopeFromContact(const std::string contactName,
                                         const mc_rbdyn::Robot & robot,
                                         const sva::PTransformd refContactPose,
                                         int numberOfFrictionSides,
+                                        double forceScalingFactor,
                                         double m_frictionCoef,
                                         boost::shared_ptr<Polytope_Rn> & frictionCone,
                                         std::mutex & frictionConeMutex,
@@ -381,6 +383,11 @@ protected:
     return zeroMomentTriangles_;
   };
 
+  double & getForceScalingFactor(const std::string & name)
+  {
+    return forceScalingFactors_.at(name);
+  }
+
   // ------------------------------------------------------> Internal variables
 
   std::string name_;
@@ -390,6 +397,9 @@ protected:
   std::set<std::string> contactsToRemove_;
 
   std::map<std::string, sva::PTransformd> refContactPoses_;
+
+  // map of the force scaling factors (alphas to be used to transfer between contacts)
+  std::map<std::string, double> forceScalingFactors_;
 
   // intermediate names vector to be set by controller and used once per compute loop
   std::vector<std::string> controllerContacts_;

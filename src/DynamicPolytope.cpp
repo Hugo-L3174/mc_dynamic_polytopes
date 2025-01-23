@@ -39,6 +39,9 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     newTimers.dt_frictionCone = mc_rtc::duration_ms::zero();
     newTimers.dt_intersection = mc_rtc::duration_ms::zero();
     contactsTimers_.emplace(contact, newTimers);
+
+    double forceScaleDefault = 1;
+    forceScalingFactors_.emplace(contact, forceScaleDefault);
   }
   // init CWC polytope
   CWCForces_.reset(new Polytope_Rn());
@@ -327,7 +330,8 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
 void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contactName,
                                                         const mc_rbdyn::Robot & robot,
                                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                                        std::mutex & forcePolyMutex)
+                                                        std::mutex & forcePolyMutex,
+                                                        double forceScalingFactor)
 {
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
@@ -614,6 +618,9 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
     // mc_rtc::log::info("time to run force poly DD : {}ms", end_DD.count());
   }
 
+  // Scaling force polytope before intersection with friction cone
+  TopGeomTools::scalingFactor(newNewPolyPolitopix, forceScalingFactor);
+
   // mc_rtc::log::info("Force polytope of {} is ok? {}", contactName, checkGravityCenterInPolytope(newPoly));
   // lock poly mutex, then reset poly pointer to newly computed poly
   std::lock_guard<std::mutex> lock(forcePolyMutex);
@@ -627,6 +634,7 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
                                                        const mc_rbdyn::Robot & robot,
                                                        const sva::PTransformd refContactPose,
                                                        int numberOfFrictionSides,
+                                                       double forceScalingFactor,
                                                        double frictionCoeff,
                                                        boost::shared_ptr<Polytope_Rn> & frictionCone,
                                                        std::mutex & frictionConeMutex,
@@ -640,9 +648,9 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   // update the correct force polytope in the map
   // launching thread and emplacing it in the threads map
   forcePolyThreadsMutex_.lock();
-  forcePolyThreads_.emplace(contactName,
-                            std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this, contactName,
-                                        std::ref(robot), std::ref(actuationPolytope), std::ref(forcePolyMutex)));
+  forcePolyThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this,
+                                                     contactName, std::ref(robot), std::ref(actuationPolytope),
+                                                     std::ref(forcePolyMutex), forceScalingFactor));
 #ifndef WIN32
   // Lower thread priority so that it has a lesser priority than the real time thread
   auto th_handle = forcePolyThreads_.at(contactName).native_handle();
@@ -773,15 +781,15 @@ void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot &
 
 void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & robot)
 {
-
+  double forceScalingFactor = 1;
   for(const auto contactName : activeContacts_)
   {
     // update the correct force polytope in the map
     // launching thread and emplacing it in the threads map
-    forcePolyThreads_.emplace(contactName,
-                              std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this, contactName,
-                                          std::ref(robot), std::ref(forcePolytopes_.at(contactName)),
-                                          std::ref(getContactMutex(forcePolyMutexes_, contactName))));
+    forcePolyThreads_.emplace(
+        contactName, std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this, contactName,
+                                 std::ref(robot), std::ref(forcePolytopes_.at(contactName)),
+                                 std::ref(getContactMutex(forcePolyMutexes_, contactName)), forceScalingFactor));
 #ifndef WIN32
     // Lower thread priority so that it has a lesser priority than the real time thread
     auto th_handle = forcePolyThreads_.at(contactName).native_handle();
@@ -815,7 +823,8 @@ void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot 
         contactName,
         std::thread(
             &DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName, std::ref(robot),
-            refContactPoses_.at(contactName), nbFrictionSides, frictionCoeff, std::ref(frictionCones_.at(contactName)),
+            refContactPoses_.at(contactName), nbFrictionSides, std::ref(forceScalingFactors_.at(contactName)),
+            frictionCoeff, std::ref(frictionCones_.at(contactName)),
             std::ref(getContactMutex(frictionConesMutexes_, contactName)), std::ref(forcePolytopes_.at(contactName)),
             std::ref(getContactMutex(forcePolyMutexes_, contactName)), std::ref(contactsTimers_.at(contactName))));
 #ifndef WIN32
@@ -1269,6 +1278,15 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
   conesCat.push_back("Friction cones");
   auto CWCCat = category;
   CWCCat.push_back("Contact Wrench Cone");
+
+  for(const auto contact : possibleContacts_)
+  {
+    gui.addElement(this, category,
+                   mc_rtc::gui::NumberSlider(
+                       fmt::format(contact + " force alpha [0-1]"),
+                       [this, contact]() { return getForceScalingFactor(contact); },
+                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.0, 1.0));
+  }
 
   for(const auto contact : possibleContacts_)
   {
