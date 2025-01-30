@@ -138,14 +138,14 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
 
       // testing for normal direction: if inside point of the face * normal - face offset > 0 then we need to invert
       // the face
-      if(inside.dot(faceNormal) - faceOffset < 0.0)
-      {
-        resultTriangles.push_back({vertices.at(0), vertices.at(i + 1), vertices.at(i + 2)});
-      }
-      else
-      {
-        resultTriangles.push_back({vertices.at(0), vertices.at(i + 2), vertices.at(i + 1)});
-      }
+      // if(inside.dot(faceNormal) - faceOffset < 0.0)
+      // {
+      // resultTriangles.push_back({vertices.at(0), vertices.at(i + 1), vertices.at(i + 2)});
+      // }
+      // else
+      // {
+      resultTriangles.push_back({vertices.at(0), vertices.at(i + 2), vertices.at(i + 1)});
+      // }
     }
   }
 }
