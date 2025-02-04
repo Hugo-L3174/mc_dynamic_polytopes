@@ -953,10 +953,14 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
   const std::string contactTest = "LeftFoot";
   for(const auto & contact : activeContacts_)
   {
+    // Important ! points for surfaces give the points coordinates from the parent link, not from the
+    // surface origin, so X_b_p and not X_s_p
+    // This means to get world frame surface points X_0_p = X_s_p * X_0_s we need X_s_p
+    // X_s_p = X_b_p * X_s_b = X_b_p * X_b_s.inv()
     auto cPoints = robot_.surface(contact).points();
     for(auto cPoint : cPoints)
     {
-      cPoint = cPoint * robot_.surface(contact).X_0_s(robot_);
+      cPoint = cPoint * robot_.surface(contact).X_b_s().inv() * robot_.surface(contact).X_0_s(robot_);
       boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
       boost::numeric::ublas::vector<double> coords(3);
       coords.insert_element(0, cPoint.translation().x());
@@ -972,7 +976,7 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
   auto cPoints = robot_.surface(contactTest).points();
   for(auto cPoint : cPoints)
   {
-    cPoint = cPoint * robot_.surface(contactTest).X_0_s(robot_);
+    cPoint = cPoint * robot_.surface(contactTest).X_b_s().inv() * robot_.surface(contactTest).X_0_s(robot_);
     boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
     boost::numeric::ublas::vector<double> coords(3);
     coords.insert_element(0, cPoint.translation().x());
@@ -1283,7 +1287,7 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
   {
     gui.addElement(this, category,
                    mc_rtc::gui::NumberSlider(
-                       fmt::format(contact + " force alpha [0-1]"),
+                       fmt::format(contact + " force alpha [0.01-1]"),
                        [this, contact]() { return getForceScalingFactor(contact); },
                        // scale min at 0.01 instead of 0 to avoid handling zero polytope
                        [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.01, 1.0));
