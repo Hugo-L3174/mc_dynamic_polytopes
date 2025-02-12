@@ -57,11 +57,11 @@ struct DynamicPolytope
     mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
     // mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
     controllerContacts_.clear();
-    refContactPoses_.clear();
+    refContactTransforms_.clear();
     for(const auto & contact : contacts)
     {
       controllerContacts_.emplace_back(contact.first);
-      refContactPoses_.emplace(contact.first, contact.second);
+      refContactTransforms_.emplace(contact.first, contact.second);
     }
 
     // if computation has not started yet, launch it
@@ -95,7 +95,7 @@ struct DynamicPolytope
 
   // compute the contact friction cone into an unbounded polyhedral cone (only planes in a polytope object)
   void buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
-                                            const sva::PTransformd contactSurface,
+                                            const sva::PTransformd X_r1_r2,
                                             boost::shared_ptr<Polytope_Rn> & frictionCone,
                                             std::mutex & frictionConeMutex,
                                             double m_frictionCoef);
@@ -396,7 +396,10 @@ protected:
   std::set<std::string> activeContacts_;
   std::set<std::string> contactsToRemove_;
 
-  std::map<std::string, sva::PTransformd> refContactPoses_;
+  // map of the contact transforms X_r1_r2, with r1 the controlled robot frame and r2 the target frame of the contact
+  // This is used to compute the orientation of the friction cone as it should be in the r1 frame (same as the force
+  // polytope) for distribution, and not in world frame
+  std::map<std::string, sva::PTransformd> refContactTransforms_;
 
   // map of the force scaling factors (alphas to be used to transfer between contacts)
   std::map<std::string, double> forceScalingFactors_;

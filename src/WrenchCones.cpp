@@ -47,7 +47,7 @@ std::vector<Eigen::Vector3d> generatePolyhedralConeGens(int numberOfFrictionSide
   // step is the scale decomposition (precision) with which to compute the actual cone (linearization)
   double step = (M_PI * 2.) / numberOfFrictionSides;
 
-  for(unsigned int i = 0; i < numberOfFrictionSides; i++)
+  for(int i = 0; i < numberOfFrictionSides; i++)
   {
     // each generator is formed by the limit points of the linearized cone around the contact normal
     generators[i] = m_rotation.transpose() * Eigen::AngleAxisd(step * i, normal) * gen;
@@ -56,24 +56,23 @@ std::vector<Eigen::Vector3d> generatePolyhedralConeGens(int numberOfFrictionSide
   return generators;
 }
 
-Eigen::MatrixXd generatePolyhedralConeHRep(int numberOfFrictionSides, Eigen::Matrix3d m_rotation, double m_frictionCoef)
+Eigen::MatrixXd generatePolyhedralConeHRep(int numberOfFrictionSides, Eigen::Matrix3d rotX_r1_r2, double m_frictionCoef)
 {
   Eigen::MatrixXd HRep(numberOfFrictionSides, 3);
 
   // step is the scale decomposition (precision) with which to compute the actual cone (linearization)
   double step = (M_PI * 2.) / numberOfFrictionSides;
 
-  Eigen::RowVector3d normal;
-  // here we compute the hrep: the rows will be the normals of the cone faces
+  Eigen::Vector3d normal;
+  // here we compute the hrep: the rows will be the normals of the cone faces in the controlled frame
   // the normals x and y axis are determined by the cos and sin for the cone decomposition
   // the z axis is determined by the friction coeff
-  for(unsigned int i = 0; i < numberOfFrictionSides; i++)
+  for(int i = 0; i < numberOfFrictionSides; i++)
   {
-    // each generator is formed by the limit points of the linearized cone around the contact normal
     // XXX we put the positive friction coeff when it should be negative
     // If the normals were towards the exterior in politopix it should be negative
     normal = {cos(i * step), sin(i * step), atan(m_frictionCoef)};
-    HRep.row(i) = normal * m_rotation.transpose();
+    HRep.row(i) = rotX_r1_r2.transpose() * normal;
   }
   return HRep;
 }

@@ -7,7 +7,7 @@
 void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles,
                                     double guiScale,
-                                    Eigen::Vector3d contactPose = {0., 0., 0.});
+                                    sva::PTransformd contactPose = sva::PTransformd(Eigen::Vector3d{0.0, 0.0, 0.0}));
 
 // Updates the faces vector of the 3D force and 3D moment in the case of a 6D polytope
 void update6DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,

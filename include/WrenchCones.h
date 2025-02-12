@@ -10,8 +10,10 @@ std::vector<Eigen::Vector3d> generatePolyhedralConeGens(int numberOfFrictionSide
                                                         double m_frictionCoef,
                                                         double maxForce);
 
+// Compute Hrep of a friction cone given the number of friction sides, the rotation matrix for X_r1_r2 with r1 the robot
+// side of the contact, and the friction coeff
 Eigen::MatrixXd generatePolyhedralConeHRep(int numberOfFrictionSides,
-                                           Eigen::Matrix3d m_rotation,
+                                           Eigen::Matrix3d rotX_r1_r2,
                                            double m_frictionCoef);
 
 // Compute the 6 x n sized matrix of the generators for a single contact

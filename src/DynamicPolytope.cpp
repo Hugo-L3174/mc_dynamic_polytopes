@@ -31,7 +31,7 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     frictionConesPlanes_.emplace(contact, newPlanes);
     forcePolyPlanes_.emplace(contact, newPlanes);
 
-    refContactPoses_.emplace(contact, robot_.surfacePose(contact));
+    refContactTransforms_.emplace(contact, sva::PTransformd::Identity());
 
     ContactTimers newTimers;
     newTimers.dt_contactTotal = mc_rtc::duration_ms::zero();
@@ -221,7 +221,7 @@ void DynamicPolytope::buildFrictionConeFromContactWithVrep(int numberOfFrictionS
 }
 
 void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
-                                                           const sva::PTransformd contactSurface,
+                                                           const sva::PTransformd X_r1_r2,
                                                            boost::shared_ptr<Polytope_Rn> & frictionCone,
                                                            std::mutex & frictionConeMutex,
                                                            double m_frictionCoef)
@@ -230,7 +230,7 @@ void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionS
   boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
 
   // get the friction cones planes
-  auto Hrep = generatePolyhedralConeHRep(numberOfFrictionSides, contactSurface.rotation(), m_frictionCoef);
+  auto Hrep = generatePolyhedralConeHRep(numberOfFrictionSides, X_r1_r2.rotation(), m_frictionCoef);
   // mc_rtc::log::info("Hrep dims are {} rows, {} columns", Hrep.rows(), Hrep.cols());
 
   // Adding the planes as the H-representation of the cone directly
@@ -632,7 +632,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 
 void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
                                                        const mc_rbdyn::Robot & robot,
-                                                       const sva::PTransformd refContactPose,
+                                                       const sva::PTransformd X_r1_r2,
                                                        int numberOfFrictionSides,
                                                        double forceScalingFactor,
                                                        double frictionCoeff,
@@ -673,7 +673,7 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   // launching thread and emplacing it in the threads map
   frictionConesThreadsMutex_.lock();
   frictionConesThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContactWithHrep, this,
-                                                         numberOfFrictionSides, refContactPose, std::ref(frictionCone),
+                                                         numberOfFrictionSides, X_r1_r2, std::ref(frictionCone),
                                                          std::ref(frictionConeMutex), frictionCoeff));
 #ifndef WIN32
   // Lower thread priority so that it has a lesser priority than the real time thread
@@ -737,14 +737,15 @@ void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot &
 
   for(const auto contactName : activeContacts_)
   {
-    sva::PTransformd contactPose = robot.surfacePose(contactName);
+    // dummy value: should need difference between controlled surface and the target in the contact pair
+    sva::PTransformd X_r1_r2 = sva::PTransformd::Identity();
     if(!withMoments_)
     {
       // update the correct cone in the map
       // launching thread and emplacing it in the threads map
       frictionConesThreads_.emplace(
           contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContactWithHrep, this, nbFrictionSides,
-                                   contactPose, std::ref(frictionCones_.at(contactName)),
+                                   X_r1_r2, std::ref(frictionCones_.at(contactName)),
                                    std::ref(getContactMutex(frictionConesMutexes_, contactName)), frictionCoeff));
 #ifndef WIN32
       // Lower thread priority so that it has a lesser priority than the real time thread
@@ -770,7 +771,7 @@ void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot &
       double newContactHalfWidth;
       findHalfWidthLength(robot.surface(contactName), newContactHalfWidth, newContactHalfLength);
       std::pair<std::pair<double, double>, sva::PTransformd> newContact(
-          std::pair<double, double>(newContactHalfLength, newContactHalfWidth), contactPose);
+          std::pair<double, double>(newContactHalfLength, newContactHalfWidth), robot.surfacePose(contactName));
 
       // TODO thread moments versions as well: add moment mutex + put mutexes as arguments
       buildWrenchConeFromContact(nbFrictionSides, newContact, frictionCones_.at(contactName),
@@ -823,7 +824,7 @@ void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot 
         contactName,
         std::thread(
             &DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName, std::ref(robot),
-            refContactPoses_.at(contactName), nbFrictionSides, std::ref(forceScalingFactors_.at(contactName)),
+            refContactTransforms_.at(contactName), nbFrictionSides, std::ref(forceScalingFactors_.at(contactName)),
             frictionCoeff, std::ref(frictionCones_.at(contactName)),
             std::ref(getContactMutex(frictionConesMutexes_, contactName)), std::ref(forcePolytopes_.at(contactName)),
             std::ref(getContactMutex(forcePolyMutexes_, contactName)), std::ref(contactsTimers_.at(contactName))));
@@ -1154,7 +1155,7 @@ void DynamicPolytope::updateTrianglesContactsGUIPolitopix()
 
   for(const auto & contact : activeContactSet)
   {
-    auto contactPose = robot_.surfacePose(contact).translation();
+    auto contactPose = robot_.surfacePose(contact);
     getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
     getContactMutex(frictionConesMutexes_, contact).lock();
     update3DPolyTrianglesPolitopix(frictionCones_.at(contact), frictionConesTrianglesMap_.at(contact), guiScale_,

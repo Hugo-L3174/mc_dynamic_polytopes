@@ -45,7 +45,7 @@ void sortFaceVertices(std::vector<Eigen::Vector3d> & vertices, Eigen::Vector3d f
 void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultTriangles,
                                     double guiScale,
-                                    Eigen::Vector3d contactPose)
+                                    sva::PTransformd contactPose)
 {
   // XXX CAREFUL here we fill a triangles list: this assumes we are in 3d (because each facet has dim vertices in a
   // polytope) BUT this means if we actually manipulate a 6d space the faces will be hexagons? can we assume the
@@ -82,7 +82,14 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
       Eigen::Vector3d vertex(polytope->getGenerator(generatorIndex)->getCoordinate(0),
                              polytope->getGenerator(generatorIndex)->getCoordinate(1),
                              polytope->getGenerator(generatorIndex)->getCoordinate(2));
-      vertices.push_back(vertex * guiScale + contactPose);
+      vertex *= guiScale;
+      // vertex pose is X_c_v (contact frame) but we want it in world frame
+      // X_0_v = X_c_v * X_0_c
+      // 3d pose rotated will be pt.r_ + pt.E_.transpose() * r_
+      // vertex = contactPose.translation() + contactPose.rotation().transpose() * vertex;
+      vertex = (sva::PTransformd(vertex) * contactPose).translation();
+      vertices.push_back(vertex);
+
       // mc_rtc::log::info("Vertex coords: {}", vertex.transpose());
     }
 
@@ -95,15 +102,20 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     */
     auto nbVertices = vertices.size();
     // mc_rtc::log::info("There are {} vertices", nbVertices);
-    // ordering the vertices
+
     Eigen::Vector3d hsNormal(halfSpaceIter.current()->getCoefficient(0), halfSpaceIter.current()->getCoefficient(1),
                              halfSpaceIter.current()->getCoefficient(2));
+    // rotate hsNormal to world frame as well
+    // XXX this should be decommented but for some reason when it is, some planes are always inverted
+    // The error probably comes from the sortFaceVertices function
+    // hsNormal = contactPose.translation() + contactPose.rotation().transpose() * hsNormal;
     hsNormal.normalize();
 
     // Safety check: sometimes facets have zero vertices idk why, probably degenerated faces. The sorting throws if this
     // is the case
     if(nbVertices != 0)
     {
+      // ordering the vertices
       sortFaceVertices(vertices, hsNormal);
     }
 
@@ -118,9 +130,6 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
       // faceNormal *= -1.0;
       faceNormal.normalize();
       // mc_rtc::log::info("computed normal is {}", faceNormal);
-      Eigen::Vector3d hsNormal(halfSpaceIter.current()->getCoefficient(0), halfSpaceIter.current()->getCoefficient(1),
-                               halfSpaceIter.current()->getCoefficient(2));
-      hsNormal.normalize();
       // mc_rtc::log::info("hsNormal is {}", hsNormal);
 
       // testing for normal direction: if normal of the triangle face * normal of the facet > 0 then we need to invert
