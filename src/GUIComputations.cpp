@@ -59,17 +59,6 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
   // For each half space in the polytope, get the generators that compose it
   constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> halfSpaceIter(polytope->getListOfHalfSpaces());
 
-  // get a point that we know is inside the polytope to compute the faces normals
-  boost::numeric::ublas::vector<double> insidePoint(Rn::getDimension());
-
-  // gravityCenter throws if there are no generators
-  if(polytope->numberOfGenerators() != 0)
-  {
-    TopGeomTools::gravityCenter(polytope, insidePoint);
-  }
-  // recast it in eigen for practical reasons
-  Eigen::Vector3d inside(insidePoint[0], insidePoint[1], insidePoint[2]);
-
   // This fills the list with vectors of the ids of the generators that compose each face
   std::vector<std::vector<unsigned int>> listOfGeneratorsPerFacet;
   polytope->getGeneratorsPerFacet(listOfGeneratorsPerFacet);
@@ -134,18 +123,16 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
       hsNormal.normalize();
       // mc_rtc::log::info("hsNormal is {}", hsNormal);
 
-      auto faceOffset = halfSpaceIter.current()->getConstant();
-
-      // testing for normal direction: if inside point of the face * normal - face offset > 0 then we need to invert
-      // the face
-      // if(inside.dot(faceNormal) - faceOffset < 0.0)
-      // {
-      // resultTriangles.push_back({vertices.at(0), vertices.at(i + 1), vertices.at(i + 2)});
-      // }
-      // else
-      // {
-      resultTriangles.push_back({vertices.at(0), vertices.at(i + 2), vertices.at(i + 1)});
-      // }
+      // testing for normal direction: if normal of the triangle face * normal of the facet > 0 then we need to invert
+      // the face (politopix and gui conventions are inverted I think)
+      if(faceNormal.dot(hsNormal) < 0.0)
+      {
+        resultTriangles.push_back({vertices.at(0), vertices.at(i + 1), vertices.at(i + 2)});
+      }
+      else
+      {
+        resultTriangles.push_back({vertices.at(0), vertices.at(i + 2), vertices.at(i + 1)});
+      }
     }
   }
 }
