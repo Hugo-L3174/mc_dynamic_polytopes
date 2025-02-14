@@ -374,6 +374,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   Eigen::MatrixXd denseJac = jac.bodyJacobian(robot.mb(), robot.mbc());
   Eigen::MatrixXd denseJacDot = jac.bodyJacobianDot(robot.mb(), robot.mbc());
   // mc_rtc::log::info("Dense Jacobian: \n{}", denseJac);
+  // mc_rtc::log::info("Dense Jacobian {} is of dimensions {}", contactName, denseJac.rows(), denseJac.cols());
 
   // Allocate then fill sparse jacobian
   Eigen::MatrixXd globalFullJac = Eigen::MatrixXd::Zero(6, robot.mb().nrDof());
@@ -413,6 +414,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
     }
   }
   // mc_rtc::log::info("Actuator vector for {} is \n{}", contactName, actuatorSelectionVector);
+  // mc_rtc::log::info("Actuator seletion vector for {} is of size {}", contactName, numberOfActuatorsPlaying);
 
   /***************************************************/
   // Hrep version
@@ -491,7 +493,6 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
     --> f = -DCIJ_T * tau + DCIJ_T * C - OSIM * \dot(J) * \dot(q)
     */
 
-    // XXX check matrix dimensions: maybe need bottom row jacSize ?
     Eigen::VectorXd constant = DCIJ_T * coriolisVec - OSIM * contactFullJacDot * qdot;
 
     // Now loop between every combination of min and max torques to get the corresponding 6D wrench
@@ -871,6 +872,37 @@ void DynamicPolytope::computeMinkowskySumPolitopix()
     // mc_rtc::log::info("Adding poly with {} gens and {} hs", newContactPoly->numberOfGenerators(),
     //                   newContactPoly->numberOfHalfSpaces());
     getContactMutex(forcePolyMutexes_, active).unlock();
+
+    // After copying the contact frame polytope, rotate it to world frame before minkowski sum
+    // Vectors are force in contact frame so X_contact_f
+    // We want X_0_f = X_contact_f * X_0_contact
+    auto X_0_contact = robot_.surfacePose(active);
+    X_0_contact.translation() = Eigen::Vector3d::Zero();
+
+    // Rotating generators
+    constIteratorOfListOfGeometricObjects<boost::shared_ptr<Generator_Rn>> iterGen(
+        newContactPoly->getListOfGenerators());
+    for(iterGen.begin(); iterGen.end() != true; iterGen.next())
+    {
+      Eigen::Vector3d vect(iterGen.current()->getCoordinate(0), iterGen.current()->getCoordinate(1),
+                           iterGen.current()->getCoordinate(2));
+      vect = (sva::PTransformd(vect) * X_0_contact).translation();
+      iterGen.current()->setCoordinate(0, vect.x());
+      iterGen.current()->setCoordinate(1, vect.y());
+      iterGen.current()->setCoordinate(2, vect.z());
+    }
+    // Rotating halfspaces normals
+    constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> iterHS(
+        newContactPoly->getListOfHalfSpaces());
+    for(iterHS.begin(); iterHS.end() != true; iterHS.next())
+    {
+      Eigen::Vector3d normal(iterHS.current()->getCoefficient(0), iterHS.current()->getCoefficient(1),
+                             iterHS.current()->getCoefficient(2));
+      normal = (sva::PTransformd(normal) * X_0_contact).translation();
+      iterHS.current()->setCoefficient(0, normal.x());
+      iterHS.current()->setCoefficient(1, normal.y());
+      iterHS.current()->setCoefficient(2, normal.z());
+    }
 
     polytopesForces.emplace_back(newContactPoly);
     if(withMoments_)
