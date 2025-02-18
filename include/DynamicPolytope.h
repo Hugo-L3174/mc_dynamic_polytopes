@@ -41,7 +41,14 @@ struct DynamicPolytope
   {
     computing_ = false;
     mainComputeThread_.join();
-    minkSumThread_.join();
+    if(zmpThread_.joinable())
+    {
+      zmpThread_.join();
+    }
+    if(minkSumThread_.joinable())
+    {
+      minkSumThread_.join();
+    }
     for(auto & thread : feasiblePolytopesThreads_)
     {
       thread.second.join();
@@ -78,8 +85,6 @@ struct DynamicPolytope
   {
     withMoments_ = withMoments;
   };
-
-  Eigen::Vector3d computeECMP(const mc_rbdyn::Robot & robot);
 
   // ------------------------------------------------------> mc_rtc interface functions
 
@@ -408,9 +413,7 @@ protected:
   std::vector<std::string> controllerContacts_;
 
   bool withMoments_;
-
-  sva::ForceVecd robotNetWrench_;
-  Eigen::Vector3d eCMP_;
+  bool computeRegions_;
 
   // politopix
 

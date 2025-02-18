@@ -3,11 +3,11 @@
 DynamicPolytope::DynamicPolytope(const std::string & name,
                                  std::set<std::string> contactNames,
                                  const mc_rbdyn::Robot & robot)
-: name_(fmt::format("DynamicPolytope_" + name)), possibleContacts_(contactNames),
-  robotNetWrench_(sva::ForceVecd::Zero()), robot_(robot)
+: name_(fmt::format("DynamicPolytope_" + name)), possibleContacts_(contactNames), robot_(robot)
 {
   // Init dimension
   Rn::setDimension(3);
+  Rn::setTolerance(1.e-07);
 
   for(const auto contact : contactNames)
   {
@@ -93,7 +93,8 @@ void DynamicPolytope::load(const mc_rtc::Configuration & config)
   {
     polyZeroMomentAreaConfig_.fromConfig(*gui);
   }
-  config("withMoments", withMoments_);
+  withMoments_ = config("withMoments", false);
+  computeRegions_ = config("computeRegions", true);
 }
 
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
@@ -140,9 +141,12 @@ void DynamicPolytope::computeRegions()
     computeFeasibleForcesFromContactSet(robot_);
 
     // Step 1.2: launch ZMP region calculation at the same time, also independant
-    if(!zmpThread_.joinable())
+    if(computeRegions_)
     {
-      zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+      if(!zmpThread_.joinable())
+      {
+        zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+      }
     }
 
     // Step 2: wait for finished individual feasible regions
@@ -168,15 +172,18 @@ void DynamicPolytope::computeRegions()
     updateTrianglesContactsGUIPolitopix();
 
     // Steps 3-6: launch the rest everytime the previous full region was computed
-    if(VRPRegionComputed_)
+    if(computeRegions_)
     {
-      if(minkSumThread_.joinable())
+      if(VRPRegionComputed_)
       {
-        minkSumThread_.join();
-      }
+        if(minkSumThread_.joinable())
+        {
+          minkSumThread_.join();
+        }
 
-      VRPRegionComputed_ = false;
-      minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
+        VRPRegionComputed_ = false;
+        minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
+      }
     }
 
     // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updating
@@ -996,9 +1003,13 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
       cPoint = cPoint * robot_.surface(contact).X_b_s().inv() * robot_.surface(contact).X_0_s(robot_);
       boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
       boost::numeric::ublas::vector<double> coords(3);
-      coords.insert_element(0, cPoint.translation().x());
-      coords.insert_element(1, cPoint.translation().y());
-      coords.insert_element(2, cPoint.translation().z());
+      // coords.insert_element(0, cPoint.translation().x());
+      // coords.insert_element(1, cPoint.translation().y());
+      // coords.insert_element(2, cPoint.translation().z());
+      // Testing with triple distance points (they are generators for a polyhedral cone, so they should not be bounded)
+      coords.insert_element(0, 3 * cPoint.translation().x() - 2 * comPosition.x());
+      coords.insert_element(1, 3 * cPoint.translation().y() - 2 * comPosition.y());
+      coords.insert_element(2, 3 * cPoint.translation().z() - 2 * comPosition.z());
       gn->setCoordinates(coords);
       newZMPPoly->addGenerator(gn);
     }
@@ -1316,6 +1327,11 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
   auto CWCCat = category;
   CWCCat.push_back("Contact Wrench Cone");
 
+  gui.addElement(this, category,
+                 mc_rtc::gui::Checkbox(
+                     "Compute explicit regions", [this]() { return computeRegions_; },
+                     [this]() { computeRegions_ = !computeRegions_; }));
+
   for(const auto contact : possibleContacts_)
   {
     gui.addElement(this, category,
@@ -1344,13 +1360,4 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
       mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [this]() { return getZMPTriangles(); }),
       mc_rtc::gui::Polyhedron("Zero moment region", polyZeroMomentAreaConfig_,
                               [this]() { return getZeroMomentTriangles(); }));
-
-  mc_rtc::gui::ArrowConfig Arrow;
-  Arrow.scale = guiScale_;
-  gui.addElement(this, category,
-                 mc_rtc::gui::Point3D("eCMP", mc_rtc::gui::PointConfig(mc_rtc::gui::Color{1.0, 0.0, 0.0}, 0.03),
-                                      [this]() -> const Eigen::Vector3d & { return eCMP_; }),
-                 mc_rtc::gui::Arrow(
-                     "Moments", Arrow, [this]() -> const Eigen::Vector3d { return Eigen::Vector3d::Zero(); },
-                     [this]() -> const Eigen::Vector3d { return robotNetWrench_.couple(); }));
 }
