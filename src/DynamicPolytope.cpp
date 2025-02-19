@@ -1,15 +1,19 @@
 #include "DynamicPolytope.h"
 
 DynamicPolytope::DynamicPolytope(const std::string & name,
-                                 std::set<std::string> contactNames,
-                                 const mc_rbdyn::Robot & robot)
-: name_(fmt::format("DynamicPolytope_" + name)), possibleContacts_(contactNames), robot_(robot)
+                                 const mc_rbdyn::Robot & robot,
+                                 const mc_rtc::Configuration & dynamicPolyConfig)
+: name_(fmt::format("DynamicPolytope_" + name)), robot_(robot), config_(dynamicPolyConfig)
 {
   // Init dimension
   Rn::setDimension(3);
   Rn::setTolerance(1.e-07);
 
-  for(const auto contact : contactNames)
+  possibleContacts_ = dynamicPolyConfig("possibleContacts", std::set<std::string>{"LeftFoot", "RightFoot"});
+  withMoments_ = dynamicPolyConfig("withMoments", false);
+  computeRegions_ = dynamicPolyConfig("computeRegions", true);
+
+  for(const auto contact : possibleContacts_)
   {
     // init triangles maps
     std::vector<std::array<Eigen::Vector3d, 3UL>> newTrianglesArray;
@@ -73,53 +77,6 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 DynamicPolytope::~DynamicPolytope()
 {
   stopThread();
-}
-
-void DynamicPolytope::load(const mc_rtc::Configuration & config)
-{
-  if(auto gui = config.find("polyhedronForce"))
-  {
-    polyForceConfig_.fromConfig(*gui);
-  }
-  if(auto gui = config.find("polyhedronMoment"))
-  {
-    polyMomentConfig_.fromConfig(*gui);
-  }
-  if(auto gui = config.find("polyhedronZMP"))
-  {
-    polyZMPConfig_.fromConfig(*gui);
-  }
-  if(auto gui = config.find("polyhedronZeroMomentArea"))
-  {
-    polyZeroMomentAreaConfig_.fromConfig(*gui);
-  }
-  withMoments_ = config("withMoments", false);
-  computeRegions_ = config("computeRegions", true);
-}
-
-void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
-{
-  logger.addLogEntry("perf_" + prefix + "totalLoop", this, [this]() { return dt_loop_total().count(); });
-  logger.addLogEntry("perf_" + prefix + "computeContactSet", this, [this]() { return dt_contactSet().count(); });
-  logger.addLogEntry("perf_" + prefix + "minkSum", this, [this]() { return dt_minkSum().count(); });
-  logger.addLogEntry("perf_" + prefix + "updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
-  logger.addLogEntry("perf_" + prefix + "guiTrianglesContacts", this,
-                     [this]() { return dt_guiTrianglesContacts().count(); });
-  logger.addLogEntry("perf_" + prefix + "guiTrianglesRegions", this,
-                     [this]() { return dt_guiTrianglesRegions().count(); });
-  logger.addLogEntry("perf_" + prefix + "zeroMomentIntersection", this,
-                     [this]() { return dt_zeroMomentInter().count(); });
-  for(const auto & contact : possibleContacts_)
-  {
-    logger.addLogEntry("perf_" + prefix + contact + "_frictionCone", this,
-                       [this, contact]() { return getContact_dt_frictionCone(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + contact + "_forcePolytope", this,
-                       [this, contact]() { return getContact_dt_forcePolytope(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + contact + "_intersection", this,
-                       [this, contact]() { return getContact_dt_intersection(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + contact + "_Total", this,
-                       [this, contact]() { return getContact_dt_Total(contact).count(); });
-  }
 }
 
 void DynamicPolytope::computeRegions()
@@ -1318,8 +1275,77 @@ void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polyt
   }
 }
 
+void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
+{
+  logger.addLogEntry("perf_" + prefix + "totalLoop", this, [this]() { return dt_loop_total().count(); });
+  logger.addLogEntry("perf_" + prefix + "computeContactSet", this, [this]() { return dt_contactSet().count(); });
+  logger.addLogEntry("perf_" + prefix + "minkSum", this, [this]() { return dt_minkSum().count(); });
+  logger.addLogEntry("perf_" + prefix + "updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
+  logger.addLogEntry("perf_" + prefix + "guiTrianglesContacts", this,
+                     [this]() { return dt_guiTrianglesContacts().count(); });
+  logger.addLogEntry("perf_" + prefix + "guiTrianglesRegions", this,
+                     [this]() { return dt_guiTrianglesRegions().count(); });
+  logger.addLogEntry("perf_" + prefix + "zeroMomentIntersection", this,
+                     [this]() { return dt_zeroMomentInter().count(); });
+  for(const auto & contact : possibleContacts_)
+  {
+    logger.addLogEntry("perf_" + prefix + contact + "_frictionCone", this,
+                       [this, contact]() { return getContact_dt_frictionCone(contact).count(); });
+    logger.addLogEntry("perf_" + prefix + contact + "_forcePolytope", this,
+                       [this, contact]() { return getContact_dt_forcePolytope(contact).count(); });
+    logger.addLogEntry("perf_" + prefix + contact + "_intersection", this,
+                       [this, contact]() { return getContact_dt_intersection(contact).count(); });
+    logger.addLogEntry("perf_" + prefix + contact + "_Total", this,
+                       [this, contact]() { return getContact_dt_Total(contact).count(); });
+  }
+}
+
 void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale, std::vector<std::string> category)
 {
+  config_("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
+  config_("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
+  config_("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
+  config_("gui")("polyhedronForce")("edges", polyForceConfig_.edge_config);
+  config_("gui")("polyhedronForce")("show_edges", polyForceConfig_.show_edges);
+  config_("gui")("polyhedronForce")("fixed_edge_color", polyForceConfig_.fixed_edge_color);
+  config_("gui")("polyhedronForce")("vertices")("color", polyForceConfig_.vertices_config.color);
+  config_("gui")("polyhedronForce")("vertices")("scale", polyForceConfig_.vertices_config.scale);
+  config_("gui")("polyhedronForce")("show_vertices", polyForceConfig_.show_vertices);
+  config_("gui")("polyhedronForce")("fixed_vertices_color", polyForceConfig_.fixed_vertices_color);
+
+  config_("gui")("polyhedronMoment")("triangle_color", polyMomentConfig_.triangle_color);
+  config_("gui")("polyhedronMoment")("show_triangle", polyMomentConfig_.show_triangle);
+  config_("gui")("polyhedronMoment")("use_triangle_color", polyMomentConfig_.use_triangle_color);
+  config_("gui")("polyhedronMoment")("edges", polyMomentConfig_.edge_config);
+  config_("gui")("polyhedronMoment")("show_edges", polyMomentConfig_.show_edges);
+  config_("gui")("polyhedronMoment")("fixed_edge_color", polyMomentConfig_.fixed_edge_color);
+  config_("gui")("polyhedronMoment")("vertices")("color", polyMomentConfig_.vertices_config.color);
+  config_("gui")("polyhedronMoment")("vertices")("scale", polyMomentConfig_.vertices_config.scale);
+  config_("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
+  config_("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
+
+  config_("gui")("polyhedronZMP")("triangle_color", polyZMPConfig_.triangle_color);
+  config_("gui")("polyhedronZMP")("show_triangle", polyZMPConfig_.show_triangle);
+  config_("gui")("polyhedronZMP")("use_triangle_color", polyZMPConfig_.use_triangle_color);
+  config_("gui")("polyhedronZMP")("edges", polyZMPConfig_.edge_config);
+  config_("gui")("polyhedronZMP")("show_edges", polyZMPConfig_.show_edges);
+  config_("gui")("polyhedronZMP")("fixed_edge_color", polyZMPConfig_.fixed_edge_color);
+  config_("gui")("polyhedronZMP")("vertices")("color", polyZMPConfig_.vertices_config.color);
+  config_("gui")("polyhedronZMP")("vertices")("scale", polyZMPConfig_.vertices_config.scale);
+  config_("gui")("polyhedronZMP")("show_vertices", polyZMPConfig_.show_vertices);
+  config_("gui")("polyhedronZMP")("fixed_vertices_color", polyZMPConfig_.fixed_vertices_color);
+
+  config_("gui")("polyhedronZeroMomentArea")("triangle_color", polyZeroMomentAreaConfig_.triangle_color);
+  config_("gui")("polyhedronZeroMomentArea")("show_triangle", polyZeroMomentAreaConfig_.show_triangle);
+  config_("gui")("polyhedronZeroMomentArea")("use_triangle_color", polyZeroMomentAreaConfig_.use_triangle_color);
+  config_("gui")("polyhedronZeroMomentArea")("edges", polyZeroMomentAreaConfig_.edge_config);
+  config_("gui")("polyhedronZeroMomentArea")("show_edges", polyZeroMomentAreaConfig_.show_edges);
+  config_("gui")("polyhedronZeroMomentArea")("fixed_edge_color", polyZeroMomentAreaConfig_.fixed_edge_color);
+  config_("gui")("polyhedronZeroMomentArea")("vertices")("color", polyZeroMomentAreaConfig_.vertices_config.color);
+  config_("gui")("polyhedronZeroMomentArea")("vertices")("scale", polyZeroMomentAreaConfig_.vertices_config.scale);
+  config_("gui")("polyhedronZeroMomentArea")("show_vertices", polyZeroMomentAreaConfig_.show_vertices);
+  config_("gui")("polyhedronZeroMomentArea")("fixed_vertices_color", polyZeroMomentAreaConfig_.fixed_vertices_color);
+
   guiScale_ = guiScale;
   category.push_back(name_);
   auto conesCat = category;
@@ -1336,10 +1362,10 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
   {
     gui.addElement(this, category,
                    mc_rtc::gui::NumberSlider(
-                       fmt::format(contact + " force alpha [0.01-1]"),
+                       fmt::format(contact + " force alpha [0.001-1]"),
                        [this, contact]() { return getForceScalingFactor(contact); },
                        // scale min at 0.01 instead of 0 to avoid handling zero polytope
-                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.01, 1.0));
+                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.001, 1.0));
   }
 
   for(const auto contact : possibleContacts_)

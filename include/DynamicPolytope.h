@@ -33,7 +33,9 @@ struct ContactTimers
 
 struct DynamicPolytope
 {
-  DynamicPolytope(const std::string & name, std::set<std::string> contactNames, const mc_rbdyn::Robot & robot);
+  DynamicPolytope(const std::string & name,
+                  const mc_rbdyn::Robot & robot,
+                  const mc_rtc::Configuration & dynamicPolyConfig);
   ~DynamicPolytope();
 
   // stopping function for destructor
@@ -88,9 +90,8 @@ struct DynamicPolytope
 
   // ------------------------------------------------------> mc_rtc interface functions
 
-  void load(const mc_rtc::Configuration & config);
   void addToGUI(mc_rtc::gui::StateBuilder & gui,
-                double guiScale,
+                double guiScale = 0.001,
                 std::vector<std::string> category = {"DynamicPolytopes"});
   void removeFromGUI(mc_rtc::gui::StateBuilder & gui);
   void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes_");
@@ -395,6 +396,7 @@ protected:
 
   // ------------------------------------------------------> Internal variables
 
+  mc_rtc::Configuration config_;
   std::string name_;
   const mc_rbdyn::Robot & robot_;
   std::set<std::string> possibleContacts_;
