@@ -1144,6 +1144,27 @@ bool DynamicPolytope::checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn
   return retResultPolitopix && retResultEigen;
 }
 
+void DynamicPolytope::checkAllHSInternal(const std::string & polyName, boost::shared_ptr<Polytope_Rn> & polytope)
+{
+  // Checking if there are internal halfspaces
+  constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> HSiter(polytope->getListOfHalfSpaces());
+  for(HSiter.begin(); HSiter.end() != true; HSiter.next())
+  {
+    // Checking if every vertex is inside of this HS
+    constIteratorOfListOfGeometricObjects<boost::shared_ptr<Generator_Rn>> GNiter(polytope->getListOfGenerators());
+    for(GNiter.begin(); GNiter.end() != true; GNiter.next())
+    {
+      double scalarProduct =
+          std::inner_product(GNiter.current()->begin(), GNiter.current()->end(), HSiter.current()->begin(), 0.);
+      if(scalarProduct + HSiter.current()->getConstant() < -1.e-04)
+      {
+        mc_rtc::log::critical("{} polytope has an internal HS (error {})", polyName,
+                              scalarProduct + HSiter.current()->getConstant());
+      }
+    }
+  }
+}
+
 void DynamicPolytope::updateTrianglesContactsGUIPolitopix()
 {
   auto start_guiTriangles = mc_rtc::clock::now();

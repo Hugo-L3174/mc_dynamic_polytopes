@@ -283,6 +283,8 @@ protected:
   // sanity check
   bool checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn> & polytope);
 
+  void checkAllHSInternal(const std::string & polyName, boost::shared_ptr<Polytope_Rn> & polytope);
+
   // ------------------------------------------------------> Timing functions
 
   inline mc_rtc::duration_ms dt_loop_total() const noexcept
