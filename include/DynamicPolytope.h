@@ -418,6 +418,7 @@ protected:
 
   bool withMoments_;
   bool computeRegions_;
+  bool HrepMode_;
 
   // politopix
 

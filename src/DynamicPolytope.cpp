@@ -12,6 +12,7 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
   possibleContacts_ = dynamicPolyConfig("possibleContacts", std::set<std::string>{"LeftFoot", "RightFoot"});
   withMoments_ = dynamicPolyConfig("withMoments", false);
   computeRegions_ = dynamicPolyConfig("computeRegions", true);
+  HrepMode_ = dynamicPolyConfig("HrepMode", false);
 
   for(const auto contact : possibleContacts_)
   {
@@ -302,8 +303,6 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // New poly var to try running DD a second time
   boost::shared_ptr<Polytope_Rn> newNewPolyPolitopix(new Polytope_Rn());
 
-  bool HrepMode = false;
-
   const int n_var = 6;
   // Removing underactuated dofs
   const int jacSize = robot.mb().nrDof() - 6;
@@ -383,7 +382,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   /***************************************************/
   // Hrep version
 
-  if(HrepMode)
+  if(HrepMode_)
   {
     // Aineq matrix is jacobian transpose block to transform wrench vec to joint torque (x2 with second one negative
     // for being over the lower torque limits)
@@ -422,12 +421,12 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
         coefficients.insert_element(2, Aineq.coeff(i, 5));
         hs->setCoefficients(coefficients);
         hs->setConstant(bineq.coeff(i));
-        newPoly->addHalfSpace(hs);
+        newNewPolyPolitopix->addHalfSpace(hs);
       }
     }
     auto start_DD = mc_rtc::clock::now();
     // Compute double description from half spaces (not generators -> truncation with bounding box)
-    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 5000);
+    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newNewPolyPolitopix, 5000);
     // mc_rtc::log::info("DD force poly for {} finished with {} gens and {} hs", contactName,
     //                   newPoly->numberOfGenerators(), newPoly->numberOfHalfSpaces());
     mc_rtc::duration_ms end_DD = mc_rtc::clock::now() - start_DD;
@@ -1374,10 +1373,13 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
   auto CWCCat = category;
   CWCCat.push_back("Contact Wrench Cone");
 
-  gui.addElement(this, category,
-                 mc_rtc::gui::Checkbox(
-                     "Compute explicit regions", [this]() { return computeRegions_; },
-                     [this]() { computeRegions_ = !computeRegions_; }));
+  gui.addElement(
+      this, category,
+      mc_rtc::gui::Checkbox(
+          "Compute explicit regions", [this]() { return computeRegions_; },
+          [this]() { computeRegions_ = !computeRegions_; }),
+      mc_rtc::gui::Checkbox(
+          "Compute force poly from Hrep", [this]() { return HrepMode_; }, [this]() { HrepMode_ = !HrepMode_; }));
 
   for(const auto contact : possibleContacts_)
   {
