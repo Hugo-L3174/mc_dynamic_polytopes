@@ -33,6 +33,16 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     frictionConesMoments_.emplace(contact, newMomentCone);
 
     HRepX3d newPlanes;
+    // Here initialize planes as simple friction cones to have a sane constraint at first iteration
+    // The rotX_r1_r2 matrix would be a z flip rotation in a default case
+    Eigen::Matrix3d defaultRot;
+    // clang-format off
+    defaultRot << 0.,  1.,  0.,
+                  1.,  0.,  0.,
+                  0.,  0., -1.;
+    // clang-format on
+    newPlanes.first = generatePolyhedralConeHRep(5, defaultRot, 0.7);
+    newPlanes.second = Eigen::VectorXd::Zero(newPlanes.first.rows());
     frictionConesPlanes_.emplace(contact, newPlanes);
     forcePolyPlanes_.emplace(contact, newPlanes);
 
