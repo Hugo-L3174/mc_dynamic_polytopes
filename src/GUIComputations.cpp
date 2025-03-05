@@ -103,8 +103,11 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     auto nbVertices = vertices.size();
     // mc_rtc::log::info("There are {} vertices", nbVertices);
 
-    Eigen::Vector3d hsNormal(halfSpaceIter.current()->getCoefficient(0), halfSpaceIter.current()->getCoefficient(1),
-                             halfSpaceIter.current()->getCoefficient(2));
+    // XXX POLITOPIX: since politopix convention seems to be inverted for Hrep inequalities
+    // i.e. they check that a0 + a1*x1 + a2*x2 ... >= 0 to belong inside
+    // we push inverted normals
+    Eigen::Vector3d hsNormal(-halfSpaceIter.current()->getCoefficient(0), -halfSpaceIter.current()->getCoefficient(1),
+                             -halfSpaceIter.current()->getCoefficient(2));
     // rotate hsNormal to world frame as well
     // XXX this should be decommented but for some reason when it is, some planes are always inverted
     // The error probably comes from the sortFaceVertices function

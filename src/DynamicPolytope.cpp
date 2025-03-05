@@ -34,14 +34,8 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 
     HRepX3d newPlanes;
     // Here initialize planes as simple friction cones to have a sane constraint at first iteration
-    // The rotX_r1_r2 matrix would be a z flip rotation in a default case
-    Eigen::Matrix3d defaultRot;
-    // clang-format off
-    defaultRot << 0.,  1.,  0.,
-                  1.,  0.,  0.,
-                  0.,  0., -1.;
-    // clang-format on
-    newPlanes.first = generatePolyhedralConeHRep(5, defaultRot, 0.7);
+    // The rotX_r1_r2 matrix would be the identity in a default case
+    newPlanes.first = generatePolyhedralConeHRep(5, Eigen::Matrix3d::Identity(), 0.7);
     newPlanes.second = Eigen::VectorXd::Zero(newPlanes.first.rows());
     frictionConesPlanes_.emplace(contact, newPlanes);
     forcePolyPlanes_.emplace(contact, newPlanes);
@@ -209,6 +203,9 @@ void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionS
   // mc_rtc::log::info("Hrep dims are {} rows, {} columns", Hrep.rows(), Hrep.cols());
 
   // Adding the planes as the H-representation of the cone directly
+  // XXX POLITOPIX: since politopix convention seems to be inverted for Hrep inequalities
+  // i.e. they check that a0 + a1*x1 + a2*x2 ... >= 0 to belong inside
+  // we push inverted normals
   for(auto i = 0; i < Hrep.rows(); i++)
   {
     boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
@@ -216,7 +213,7 @@ void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionS
     normal.insert_element(0, Hrep.row(i).coeff(0));
     normal.insert_element(1, Hrep.row(i).coeff(1));
     normal.insert_element(2, Hrep.row(i).coeff(2));
-    hs->setCoefficients(normal);
+    hs->setCoefficients(-normal);
     hs->setConstant(0.0);
     newCone->addHalfSpace(hs);
   }
@@ -421,6 +418,9 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
     {
       // Add half space only if row is not null, ie only if this dof plays into the contact force (reduces nb of planes
       // to simplify in polytope)
+      // XXX POLITOPIX: since politopix convention seems to be inverted for Hrep inequalities
+      // i.e. they check that a0 + a1*x1 + a2*x2 ... >= 0 to belong inside
+      // we push inverted normals
       if(!Aineq.row(i).isZero())
       {
         boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
@@ -429,7 +429,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
         coefficients.insert_element(0, Aineq.coeff(i, 3));
         coefficients.insert_element(1, Aineq.coeff(i, 4));
         coefficients.insert_element(2, Aineq.coeff(i, 5));
-        hs->setCoefficients(coefficients);
+        hs->setCoefficients(-coefficients);
         hs->setConstant(bineq.coeff(i));
         newNewPolyPolitopix->addHalfSpace(hs);
       }
@@ -1298,7 +1298,9 @@ void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polyt
   for(int halfSpaceIndex = 0; halfSpaceIndex < nbOfPlanes; halfSpaceIndex++)
   {
     const auto halfSpace = polytope->getHalfSpace(halfSpaceIndex);
-    // pushing back inverted normals
+    // XXX POLITOPIX: since politopix convention seems to be inverted for Hrep inequalities
+    // i.e. they check that a0 + a1*x1 + a2*x2 ... >= 0 to belong inside
+    // we push inverted normals
     Normals.row(halfSpaceIndex) << -halfSpace->getCoefficient(0), -halfSpace->getCoefficient(1),
         -halfSpace->getCoefficient(2);
     Offsets(halfSpaceIndex) = halfSpace->getConstant();

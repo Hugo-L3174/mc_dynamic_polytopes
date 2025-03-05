@@ -59,20 +59,24 @@ std::vector<Eigen::Vector3d> generatePolyhedralConeGens(int numberOfFrictionSide
 Eigen::MatrixXd generatePolyhedralConeHRep(int numberOfFrictionSides, Eigen::Matrix3d rotX_r1_r2, double m_frictionCoef)
 {
   Eigen::MatrixXd HRep(numberOfFrictionSides, 3);
+  Eigen::Vector3d contactNormal(Eigen::Vector3d::UnitZ());
+  Eigen::Vector3d tan(Eigen::Vector3d::UnitX());
+
+  // The angle to the contact normal of the friction cone is atan(mu)
+  // But here for hrep we want the normals of the linearized cone's faces
+  // --> there is a 90° angle to add to get the face normal
+  double angle = (M_PI / 2.) + atan(m_frictionCoef);
+  // This is the first face normal
+  Eigen::Vector3d normal = Eigen::AngleAxisd(angle, tan) * contactNormal;
 
   // step is the scale decomposition (precision) with which to compute the actual cone (linearization)
   double step = (M_PI * 2.) / numberOfFrictionSides;
 
-  Eigen::Vector3d normal;
   // here we compute the hrep: the rows will be the normals of the cone faces in the controlled frame
-  // the normals x and y axis are determined by the cos and sin for the cone decomposition
-  // the z axis is determined by the friction coeff
   for(int i = 0; i < numberOfFrictionSides; i++)
   {
-    // XXX we put the positive friction coeff when it should be negative
-    // If the normals were towards the exterior in politopix it should be negative
-    normal = {cos(i * step), sin(i * step), atan(m_frictionCoef)};
-    HRep.row(i) = rotX_r1_r2.transpose() * normal;
+    // Rotation around contact normal for each decomposed angle, then transposed in the relative contact frame
+    HRep.row(i) = rotX_r1_r2.transpose() * Eigen::AngleAxisd(step * i, contactNormal) * normal;
   }
   return HRep;
 }
