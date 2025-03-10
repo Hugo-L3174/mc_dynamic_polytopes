@@ -19,7 +19,7 @@
 #include <politopix/PrismaticPolyhedron_Rn.h>
 #include <politopix/politopixAPI.h>
 
-// #include <eigen-cdd/Polyhedron.h>
+#include <libqhull_r/qhull_ra.h>
 
 using HRepX3d = std::pair<Eigen::MatrixX3d, Eigen::VectorXd>;
 
@@ -278,6 +278,9 @@ protected:
     }
   };
 
+  // Computes the convex hull of the set of points given (Qhull format) and builds the halfspaces in the given polytope
+  void computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope);
+
   Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
 
   // sanity check
@@ -434,9 +437,6 @@ protected:
 
   boost::shared_ptr<Polytope_Rn> zmpRegion_;
   boost::shared_ptr<Polytope_Rn> zeroMomentRegion_;
-
-  // cdd
-  // std::vector<std::shared_ptr<Eigen::Polyhedron>> cddFrictionCones_;
 
   // threading things
   std::thread mainComputeThread_;

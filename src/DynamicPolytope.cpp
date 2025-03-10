@@ -307,8 +307,6 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 {
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
-  // New poly var to try running DD a second time
-  boost::shared_ptr<Polytope_Rn> newNewPolyPolitopix(new Polytope_Rn());
 
   const int n_var = 6;
   // Removing underactuated dofs
@@ -431,12 +429,12 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
         coefficients.insert_element(2, Aineq.coeff(i, 5));
         hs->setCoefficients(-coefficients);
         hs->setConstant(bineq.coeff(i));
-        newNewPolyPolitopix->addHalfSpace(hs);
+        newPoly->addHalfSpace(hs);
       }
     }
     auto start_DD = mc_rtc::clock::now();
     // Compute double description from half spaces (not generators -> truncation with bounding box)
-    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newNewPolyPolitopix, 5000);
+    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 5000);
     // mc_rtc::log::info("DD force poly for {} finished with {} gens and {} hs", contactName,
     //                   newPoly->numberOfGenerators(), newPoly->numberOfHalfSpaces());
     mc_rtc::duration_ms end_DD = mc_rtc::clock::now() - start_DD;
@@ -528,6 +526,9 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 
     // Compute resulting force for every combination and add it as vertex for polytope before DD
     int itCounter = 0;
+
+    auto start_Qhull = mc_rtc::clock::now();
+    std::vector<double> qhullVect;
     for(const auto & torqueCombination : torqueExtremaCombinations)
     {
       // mc_rtc::log::info("torque combination vector for {} is \n{}", contactName, torqueCombination);
@@ -535,49 +536,26 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
       // mc_rtc::log::info("Wrench vertex {} for {} is {}", itCounter, contactName,
       //                   wrenchVertex.segment(3, 3).transpose());
 
-      // Create new poly generator
-      boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
-      boost::numeric::ublas::vector<double> coords(3);
       // Insert force elements (3, 4, 5 of wrench 6D vector)
-      coords.insert_element(0, wrenchVertex.coeff(3));
-      coords.insert_element(1, wrenchVertex.coeff(4));
-      coords.insert_element(2, wrenchVertex.coeff(5));
-      gn->setCoordinates(coords);
-      newPoly->addGenerator(gn);
+
+      qhullVect.emplace_back(wrenchVertex.coeff(3));
+      qhullVect.emplace_back(wrenchVertex.coeff(4));
+      qhullVect.emplace_back(wrenchVertex.coeff(5));
+
       itCounter++;
     }
 
-    // Half-space intermediate vars
-    boost::shared_ptr<HalfSpace_Rn> HS;
-    double val;
+    computeQhullHrep(qhullVect, newPoly);
+    mc_rtc::duration_ms end_Qhull = mc_rtc::clock::now() - start_Qhull;
+    // mc_rtc::log::info("time to run force poly Qhull {} : {}ms", contactName, end_Qhull.count());
 
     auto start_DD = mc_rtc::clock::now();
-    // Compute double description from generators
-    DoubleDescriptionFromGenerators::Compute(newPoly, 10000);
 
-    // Trying to reuse half spaces of the computed poly to run a new DD (less buggy from H-rep)
-    int numberOfHalfSpacesPolitopix = newPoly->numberOfHalfSpaces();
+    // Now newPoly is a polytope with only the H-rep, run DD on it (for intersection)
+    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 5000);
+    // mc_rtc::log::info("{} has {} gens, {} hs after DD", contactName, newPoly->numberOfGenerators(),
+    // newPoly->numberOfHalfSpaces());
 
-    // Recopy all half-spaces in a new poly
-    for(int hs_count = 0; hs_count < numberOfHalfSpacesPolitopix; hs_count++)
-    {
-      HS.reset(new HalfSpace_Rn(3));
-      // The second member b
-      val = newPoly->getHalfSpace(hs_count)->getConstant();
-      HS->setConstant(val);
-      // The normal vector
-      for(int coord_count = 0; coord_count < 3; coord_count++)
-      {
-        val = newPoly->getHalfSpace(hs_count)->getCoefficient(coord_count);
-        HS->setCoefficient(coord_count, val);
-      }
-      newNewPolyPolitopix->addHalfSpace(HS);
-    }
-
-    // Now newNewPoly is a polytope with only the H-rep, try to run DD on it
-    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newNewPolyPolitopix, 5000);
-
-    // mc_rtc::log::info("After DD poly {} has {} vertices", contactName, newPoly->numberOfGenerators());
     // for(int vertex = 0; vertex < newPoly->numberOfGenerators(); vertex++)
     // {
     //   Eigen::Vector3d thisVertex(newPoly->getGenerator(vertex)->getCoordinate(0),
@@ -589,19 +567,66 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
     // mc_rtc::log::info("Topo ok {}? {}", contactName, newPoly->checkTopologyAndGeometry());
 
     mc_rtc::duration_ms end_DD = mc_rtc::clock::now() - start_DD;
-    // mc_rtc::log::info("time to run force poly DD : {}ms", end_DD.count());
+    // mc_rtc::log::info("time to run force poly DD {} : {}ms", contactName, end_DD.count());
   }
 
   // Scaling force polytope before intersection with friction cone
-  TopGeomTools::scalingFactor(newNewPolyPolitopix, forceScalingFactor);
+  TopGeomTools::scalingFactor(newPoly, forceScalingFactor);
 
   // mc_rtc::log::info("Force polytope of {} is ok? {}", contactName, checkGravityCenterInPolytope(newPoly));
   // lock poly mutex, then reset poly pointer to newly computed poly
   std::lock_guard<std::mutex> lock(forcePolyMutex);
   actuationPolytope.reset();
-  actuationPolytope = newNewPolyPolitopix;
-  // XXX does not seem to work? super small polytopes
-  // actuationPolytope = newNewPolyCDD;
+  actuationPolytope = newPoly;
+}
+
+void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope)
+{
+  // Initialize local Qhull environment
+  qhT * qh = (qhT *)malloc(sizeof(qhT));
+  if(!qh)
+  {
+    mc_rtc::log::error("Qhull malloc error.");
+    return;
+  }
+  QHULL_LIB_CHECK
+  // QHull init to be thread safe
+  qh_zero(qh, nullptr);
+
+  int dim = 3;
+  int numPoints = points.size() / dim;
+
+  // Compute convex envelope (string arg for cpp binding)
+  if(qh_new_qhull(qh, dim, numPoints, points.data(), 0, "qhull", nullptr, nullptr))
+  {
+    mc_rtc::log::error("Qhull: convex envelope error.");
+    qh_freeqhull(qh, 1);
+    return;
+  }
+
+  facetT * facet;
+  boost::shared_ptr<HalfSpace_Rn> HS;
+  // This macro iterates the qhull environment facet list on the declared facetT
+  FORALLfacets
+  {
+    // Qhull convention is a0 + a1*x1 + a2*x2+ ... = 0
+    // This means offset should be negative for inequality
+    if(!facet->normal) continue;
+    HS.reset(new HalfSpace_Rn(3));
+    // Getting all 3 coefficients of the facet normal
+    // (negative for politopix convention)
+    for(int coord_count = 0; coord_count < 3; coord_count++)
+    {
+      HS->setCoefficient(coord_count, facet->normal[coord_count]);
+    }
+    // Setting offset (negative from qhull convention)
+    HS->setConstant(-facet->offset);
+    polytope->addHalfSpace(HS);
+  }
+
+  // Memory free
+  qh_freeqhull(qh, 1);
+  free(qh);
 }
 
 void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
@@ -787,7 +812,7 @@ void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & rob
 void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot)
 {
   Rn::setDimension(3);
-  auto frictionCoeff = 0.7;
+  auto frictionCoeff = 0.5;
   auto nbFrictionSides = 5;
   std::lock_guard<std::mutex> lock(contactSetMutex_);
   for(const auto & contactName : activeContacts_)

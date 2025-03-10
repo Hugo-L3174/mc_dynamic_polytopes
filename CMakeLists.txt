@@ -19,14 +19,12 @@ project(${PROJECT_NAME} LANGUAGES CXX VERSION ${PROJECT_VERSION})
 
 # cmake macro for project dependencies
 add_project_dependency(polito REQUIRED NO_MODULE)
+add_project_dependency(Qhull REQUIRED)
 
 # Check if the project is built inside mc_rtc
 if(NOT TARGET mc_rtc::mc_control)
   find_package(mc_rtc REQUIRED)
 endif()
-
-# for cdd computations if any
-# find_package(eigen-cdd REQUIRED)
 
 
 # add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
@@ -62,7 +60,7 @@ target_link_libraries(DynamicPolytope
   PUBLIC
   mc_rtc::mc_control_fsm
   Politopix::polito
-  # eigen-cdd::eigen-cdd
+  Qhull::qhull_r
 )
 
 #### Exporting targets and installing ####
