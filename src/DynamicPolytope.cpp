@@ -552,7 +552,10 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
     auto start_DD = mc_rtc::clock::now();
 
     // Now newPoly is a polytope with only the H-rep, run DD on it (for intersection)
-    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 5000);
+    // XXX Now keeping Hrep only, see buildFeasiblePolytopeFromContact for logic
+
+    // politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 3000);
+
     // mc_rtc::log::info("{} has {} gens, {} hs after DD", contactName, newPoly->numberOfGenerators(),
     // newPoly->numberOfHalfSpaces());
 
@@ -645,77 +648,43 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   auto start_forcePoly = mc_rtc::clock::now();
 
   // update the correct force polytope in the map
-  // launching thread and emplacing it in the threads map
-  forcePolyThreadsMutex_.lock();
-  forcePolyThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this,
-                                                     contactName, std::ref(robot), std::ref(actuationPolytope),
-                                                     std::ref(forcePolyMutex), forceScalingFactor));
-#ifndef WIN32
-  // Lower thread priority so that it has a lesser priority than the real time thread
-  auto th_handle = forcePolyThreads_.at(contactName).native_handle();
-  int policy = 0;
-  sched_param param{};
-  pthread_getschedparam(th_handle, &policy, &param);
-  param.sched_priority = 10;
-  if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
-  {
-    // XXX Check if warning exists on real time kernel
-    // mc_rtc::log::warning(
-    //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
-    //     "cause latency to the real-time loop.",
-    //     name_, contactName);
-  }
-#endif
-  forcePolyThreadsMutex_.unlock();
+  buildActuationPolytopeFromContact(contactName, robot, actuationPolytope, forcePolyMutex, forceScalingFactor);
+  timers.dt_forcePolytope = mc_rtc::clock::now() - start_forcePoly;
 
   auto start_frictionCone = mc_rtc::clock::now();
-  // launching thread and emplacing it in the threads map
-  frictionConesThreadsMutex_.lock();
-  frictionConesThreads_.emplace(contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContactWithHrep, this,
-                                                         numberOfFrictionSides, X_r1_r2, std::ref(frictionCone),
-                                                         std::ref(frictionConeMutex), frictionCoeff));
-#ifndef WIN32
-  // Lower thread priority so that it has a lesser priority than the real time thread
-  th_handle = frictionConesThreads_.at(contactName).native_handle();
-  pthread_getschedparam(th_handle, &policy, &param);
-  param.sched_priority = 10;
-  if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
-  {
-    // mc_rtc::log::warning(
-    //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
-    //     "cause latency to the real-time loop.",
-    //     name_, contactName);
-  }
-#endif
-  frictionConesThreadsMutex_.unlock();
-  // Wait for end of computations
-  frictionConesThreadsMutex_.lock();
-  frictionConesThreads_.at(contactName).join();
-  frictionConesThreads_.erase(contactName);
-  frictionConesThreadsMutex_.unlock();
-
+  buildFrictionConeFromContactWithHrep(numberOfFrictionSides, X_r1_r2, frictionCone, frictionConeMutex, frictionCoeff);
   timers.dt_frictionCone = mc_rtc::clock::now() - start_frictionCone;
-
-  forcePolyThreadsMutex_.lock();
-  forcePolyThreads_.at(contactName).join();
-  forcePolyThreads_.erase(contactName);
-  forcePolyThreadsMutex_.unlock();
-
-  timers.dt_forcePolytope = mc_rtc::clock::now() - start_forcePoly;
 
   auto start_intersection = mc_rtc::clock::now();
   // Compute intersection
-  std::lock_guard<mutex> lockFriction(getContactMutex(frictionConesMutexes_, contactName));
-  std::lock_guard<mutex> lockForce(getContactMutex(forcePolyMutexes_, contactName));
+  std::lock_guard<mutex> lockFriction(frictionConeMutex);
+  std::lock_guard<mutex> lockForce(forcePolyMutex);
 
   // intersect friction cone planes with force polytope into friction cone object
+  // Two possible ways: either we don't run the DD on the force poly at first, just compute force planes, compute
+  // friction planes, combine them and then run a DD to get intersection: less redundant operations but the DD runs on a
+  // big polytope
+  // Second way is to run the DD on the force poly as expected then intersect with friction planes. Redundant operations
+  // because kind of DD twice but intersection runs only on the newly added planes so in the end almost the same.
+
   // mc_rtc::log::info("Friction cone {} before intersection: {} hs and {} gens", contactName,
   //                   frictionCones_.at(contactName)->numberOfHalfSpaces(),
   //                   frictionCones_.at(contactName)->numberOfGenerators());
   // mc_rtc::log::info("Force poly {} before intersection: {} hs and {} gens", contactName,
   //                   forcePolytopes_.at(contactName)->numberOfHalfSpaces(),
   //                   forcePolytopes_.at(contactName)->numberOfGenerators());
-  politopixAPI::computeIntersectionWithoutCheck(forcePolytopes_.at(contactName), frictionCones_.at(contactName));
+
+  // Adding friction cone planes to force planes before running DD
+
+  constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> iteHSB(frictionCone->getListOfHalfSpaces());
+  for(iteHSB.begin(); iteHSB.end() != true; iteHSB.next())
+  {
+    actuationPolytope->addHalfSpace(iteHSB.current());
+  }
+  politopixAPI::computeDoubleDescriptionWithoutCheck(actuationPolytope, 3000);
+
+  // politopixAPI::computeIntersectionWithoutCheck(actuationPolytope, frictionCone);
+
   // mc_rtc::log::info("Friction cone {} after intersection: {} hs and {} gens", contactName,
   //                   frictionCones_.at(contactName)->numberOfHalfSpaces(),
   //                   frictionCones_.at(contactName)->numberOfGenerators());
@@ -740,28 +709,8 @@ void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot &
     sva::PTransformd X_r1_r2 = sva::PTransformd::Identity();
     if(!withMoments_)
     {
-      // update the correct cone in the map
-      // launching thread and emplacing it in the threads map
-      frictionConesThreads_.emplace(
-          contactName, std::thread(&DynamicPolytope::buildFrictionConeFromContactWithHrep, this, nbFrictionSides,
-                                   X_r1_r2, std::ref(frictionCones_.at(contactName)),
-                                   std::ref(getContactMutex(frictionConesMutexes_, contactName)), frictionCoeff));
-#ifndef WIN32
-      // Lower thread priority so that it has a lesser priority than the real time thread
-      auto th_handle = frictionConesThreads_.at(contactName).native_handle();
-      int policy = 0;
-      sched_param param{};
-      pthread_getschedparam(th_handle, &policy, &param);
-      param.sched_priority = 10;
-      if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
-      {
-        // XXX Check if warning exists on real time kernel
-        // mc_rtc::log::warning(
-        //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
-        //     "cause latency to the real-time loop.",
-        //     name_, contactName);
-      }
-#endif
+      buildFrictionConeFromContactWithHrep(nbFrictionSides, X_r1_r2, frictionCones_.at(contactName),
+                                           getContactMutex(frictionConesMutexes_, contactName), frictionCoeff);
     }
     else
     {
@@ -784,28 +733,8 @@ void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & rob
   double forceScalingFactor = 1;
   for(const auto contactName : activeContacts_)
   {
-    // update the correct force polytope in the map
-    // launching thread and emplacing it in the threads map
-    forcePolyThreads_.emplace(
-        contactName, std::thread(&DynamicPolytope::buildActuationPolytopeFromContact, this, contactName,
-                                 std::ref(robot), std::ref(forcePolytopes_.at(contactName)),
-                                 std::ref(getContactMutex(forcePolyMutexes_, contactName)), forceScalingFactor));
-#ifndef WIN32
-    // Lower thread priority so that it has a lesser priority than the real time thread
-    auto th_handle = forcePolyThreads_.at(contactName).native_handle();
-    int policy = 0;
-    sched_param param{};
-    pthread_getschedparam(th_handle, &policy, &param);
-    param.sched_priority = 10;
-    if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
-    {
-      // XXX Check if warning exists on real time kernel
-      // mc_rtc::log::warning(
-      //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
-      //     "cause latency to the real-time loop.",
-      //     name_, contactName);
-    }
-#endif
+    buildActuationPolytopeFromContact(contactName, robot, forcePolytopes_.at(contactName),
+                                      getContactMutex(forcePolyMutexes_, contactName), forceScalingFactor);
   }
 }
 

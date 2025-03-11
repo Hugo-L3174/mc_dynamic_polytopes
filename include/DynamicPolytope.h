@@ -447,11 +447,7 @@ protected:
   std::mutex contactSetMutex_;
   std::map<std::string, std::thread> feasiblePolytopesThreads_;
   std::mutex feasiblePolytopesThreadsMutex_;
-  std::map<std::string, std::thread> frictionConesThreads_;
-  std::mutex frictionConesThreadsMutex_;
   std::map<std::string, std::mutex> frictionConesMutexes_;
-  std::map<std::string, std::thread> forcePolyThreads_;
-  std::mutex forcePolyThreadsMutex_;
   std::map<std::string, std::mutex> forcePolyMutexes_;
   std::thread zmpThread_;
   std::thread minkSumThread_;
