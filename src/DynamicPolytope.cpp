@@ -620,7 +620,7 @@ void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shar
     // (negative for politopix convention)
     for(int coord_count = 0; coord_count < 3; coord_count++)
     {
-      HS->setCoefficient(coord_count, facet->normal[coord_count]);
+      HS->setCoefficient(coord_count, -facet->normal[coord_count]);
     }
     // Setting offset (negative from qhull convention)
     HS->setConstant(-facet->offset);
@@ -909,7 +909,7 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
   int dim = 3;
   boost::shared_ptr<Polytope_Rn> newZMPPoly(new Polytope_Rn());
 
-  std::vector<Eigen::Vector3d> generators;
+  std::vector<double> qhullVect;
   const std::string contactTest = "LeftFoot";
   for(const auto & contact : activeContacts_)
   {
@@ -921,17 +921,13 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
     for(auto cPoint : cPoints)
     {
       cPoint = cPoint * robot_.surface(contact).X_b_s().inv() * robot_.surface(contact).X_0_s(robot_);
-      boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
-      boost::numeric::ublas::vector<double> coords(3);
       // coords.insert_element(0, cPoint.translation().x());
       // coords.insert_element(1, cPoint.translation().y());
       // coords.insert_element(2, cPoint.translation().z());
       // Testing with triple distance points (they are generators for a polyhedral cone, so they should not be bounded)
-      coords.insert_element(0, 3 * cPoint.translation().x() - 2 * comPosition.x());
-      coords.insert_element(1, 3 * cPoint.translation().y() - 2 * comPosition.y());
-      coords.insert_element(2, 3 * cPoint.translation().z() - 2 * comPosition.z());
-      gn->setCoordinates(coords);
-      newZMPPoly->addGenerator(gn);
+      qhullVect.emplace_back(3 * cPoint.translation().x() - 2 * comPosition.x());
+      qhullVect.emplace_back(3 * cPoint.translation().y() - 2 * comPosition.y());
+      qhullVect.emplace_back(3 * cPoint.translation().z() - 2 * comPosition.z());
     }
   }
 
@@ -950,15 +946,17 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
     newZMPPoly->addGenerator(gn);
   }
   */
-  boost::shared_ptr<Generator_Rn> CoMgn(new Generator_Rn(dim));
-  boost::numeric::ublas::vector<double> coords(3);
-  coords.insert_element(0, comPosition.x());
-  coords.insert_element(1, comPosition.y());
-  coords.insert_element(2, comPosition.z());
-  CoMgn->setCoordinates(coords);
-  newZMPPoly->addGenerator(CoMgn);
 
-  DoubleDescriptionFromGenerators::Compute(newZMPPoly, 1000);
+  qhullVect.emplace_back(comPosition.x());
+  qhullVect.emplace_back(comPosition.y());
+  qhullVect.emplace_back(comPosition.z());
+
+  computeQhullHrep(qhullVect, newZMPPoly);
+
+  politopixAPI::computeDoubleDescriptionWithoutCheck(newZMPPoly, 3000);
+
+  checkAllHSInternal("ZMP", newZMPPoly);
+
   std::lock_guard<std::mutex> lock(ZMPMutex_);
   zmpRegion_ = newZMPPoly;
 }
