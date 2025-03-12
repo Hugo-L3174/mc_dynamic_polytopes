@@ -7,6 +7,7 @@ For now the computations are wrapped only around the [politopix library](https:/
 
 - [mc_rtc](https://github.com/jrl-umi3218/mc_rtc)
 - the github port of [politopix](https://github.com/Hugo-L3174/politopix)
+- [qhull](http://www.qhull.org/)
 
 ## Installation
 
