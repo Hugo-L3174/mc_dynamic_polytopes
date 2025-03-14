@@ -59,7 +59,7 @@ struct DynamicPolytope
 
   // Set current contact set to be used for next computation: contact name and contact reference pose, ie the frame of
   // the target surface of the contact (only the orientation is used for the friction cone)
-  void setControllerContacts(const std::vector<std::pair<std::string, sva::PTransformd>> & contacts)
+  void setControllerContacts(const std::map<std::string, sva::PTransformd> & contacts)
   {
     auto waitForLock = mc_rtc::clock::now();
     std::lock_guard<std::mutex> lock(contactSetMutex_);
@@ -79,6 +79,14 @@ struct DynamicPolytope
       computing_ = true;
       // signal main computation thread
       cv_.notify_one();
+    }
+  }
+
+  void setContactFrictions(const std::map<std::string, double> & contactFrictions)
+  {
+    for(const auto & friction : contactFrictions)
+    {
+      getFrictionCoeff(friction.first) = friction.second;
     }
   }
 
@@ -125,8 +133,6 @@ struct DynamicPolytope
                                   Eigen::Vector3d CoM);
 
   // compute the force polytope of the contact from the wrench limits of the limb actuating it
-  // args should be a polytope pointer/ref and a way to structure the limb Jacobian (only for a chosen limb)
-  // think about how to compute bounds if jac non diagonal (redundancy): orso2018ral says QP? or LP?
   // now also taking a scale factor (0-1) for force
   void buildActuationPolytopeFromContact(const std::string contactName,
                                          const mc_rbdyn::Robot & robot,
