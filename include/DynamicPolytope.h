@@ -399,6 +399,16 @@ protected:
     return forceScalingFactors_.at(name);
   }
 
+  double & getFrictionCoeff(const std::string & name)
+  {
+    return frictionCoefficients_.at(name);
+  }
+
+  int & getNbOfFrictionSides(const std::string & name)
+  {
+    return numbersOfFrictionSides_.at(name);
+  }
+
   // ------------------------------------------------------> Internal variables
 
   mc_rtc::Configuration config_;
@@ -415,6 +425,11 @@ protected:
 
   // map of the force scaling factors (alphas to be used to transfer between contacts)
   std::map<std::string, double> forceScalingFactors_;
+
+  // friction coeffs for the cones, stored individually from contact name
+  std::map<std::string, double> frictionCoefficients_;
+  // number of sides for cones linearization, stored individually from contact name
+  std::map<std::string, int> numbersOfFrictionSides_;
 
   // intermediate names vector to be set by controller and used once per compute loop
   std::vector<std::string> controllerContacts_;

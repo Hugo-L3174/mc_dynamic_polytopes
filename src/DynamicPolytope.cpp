@@ -14,6 +14,10 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
   computeRegions_ = dynamicPolyConfig("computeRegions", true);
   HrepMode_ = dynamicPolyConfig("HrepMode", false);
 
+  double defaultForceScale = 1;
+  int defaultFrictionSides = 5;
+  double defaultFrictionCoeff = 0.5;
+
   for(const auto contact : possibleContacts_)
   {
     // init triangles maps
@@ -35,7 +39,8 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     HRepX3d newPlanes;
     // Here initialize planes as simple friction cones to have a sane constraint at first iteration
     // The rotX_r1_r2 matrix would be the identity in a default case
-    newPlanes.first = generatePolyhedralConeHRep(5, Eigen::Matrix3d::Identity(), 0.7);
+    newPlanes.first =
+        generatePolyhedralConeHRep(defaultFrictionSides, Eigen::Matrix3d::Identity(), defaultFrictionCoeff);
     newPlanes.second = Eigen::VectorXd::Zero(newPlanes.first.rows());
     frictionConesPlanes_.emplace(contact, newPlanes);
     forcePolyPlanes_.emplace(contact, newPlanes);
@@ -49,8 +54,9 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     newTimers.dt_intersection = mc_rtc::duration_ms::zero();
     contactsTimers_.emplace(contact, newTimers);
 
-    double forceScaleDefault = 1;
-    forceScalingFactors_.emplace(contact, forceScaleDefault);
+    forceScalingFactors_.emplace(contact, defaultForceScale);
+    frictionCoefficients_.emplace(contact, defaultFrictionCoeff);
+    numbersOfFrictionSides_.emplace(contact, defaultFrictionSides);
   }
   // init CWC polytope
   CWCForces_.reset(new Polytope_Rn());
@@ -741,8 +747,6 @@ void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & rob
 void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot)
 {
   Rn::setDimension(3);
-  auto frictionCoeff = 0.5;
-  auto nbFrictionSides = 5;
   std::lock_guard<std::mutex> lock(contactSetMutex_);
   for(const auto & contactName : activeContacts_)
   {
@@ -752,10 +756,11 @@ void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot 
         contactName,
         std::thread(
             &DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName, std::ref(robot),
-            refContactTransforms_.at(contactName), nbFrictionSides, std::ref(forceScalingFactors_.at(contactName)),
-            frictionCoeff, std::ref(frictionCones_.at(contactName)),
-            std::ref(getContactMutex(frictionConesMutexes_, contactName)), std::ref(forcePolytopes_.at(contactName)),
-            std::ref(getContactMutex(forcePolyMutexes_, contactName)), std::ref(contactsTimers_.at(contactName))));
+            refContactTransforms_.at(contactName), std::ref(numbersOfFrictionSides_.at(contactName)),
+            std::ref(forceScalingFactors_.at(contactName)), std::ref(frictionCoefficients_.at(contactName)),
+            std::ref(frictionCones_.at(contactName)), std::ref(getContactMutex(frictionConesMutexes_, contactName)),
+            std::ref(forcePolytopes_.at(contactName)), std::ref(getContactMutex(forcePolyMutexes_, contactName)),
+            std::ref(contactsTimers_.at(contactName))));
 #ifndef WIN32
     // Lower thread priority so that it has a lesser priority than the real time thread
     auto th_handle = feasiblePolytopesThreads_.at(contactName).native_handle();
@@ -1332,8 +1337,10 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
 
   guiScale_ = guiScale;
   category.push_back(name_);
-  auto conesCat = category;
-  conesCat.push_back("Friction cones");
+  auto coeffsCat = category;
+  coeffsCat.push_back("Coefficients");
+  auto contactsCat = category;
+  contactsCat.push_back("Contact Polytopes");
   auto CWCCat = category;
   CWCCat.push_back("Contact Wrench Cone");
 
@@ -1347,29 +1354,34 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
 
   for(const auto contact : possibleContacts_)
   {
-    gui.addElement(this, category,
+    gui.addElement(this, coeffsCat,
                    mc_rtc::gui::NumberSlider(
                        fmt::format(contact + " force alpha [0.001-1]"),
                        [this, contact]() { return getForceScalingFactor(contact); },
-                       // scale min at 0.01 instead of 0 to avoid handling zero polytope
-                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.001, 1.0));
-  }
+                       // scale min at 0.001 instead of 0 to avoid handling zero polytope
+                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.001, 1.0),
+                   mc_rtc::gui::NumberInput(
+                       fmt::format(contact + " friction coefficient"),
+                       [this, contact]() { return getFrictionCoeff(contact); },
+                       [this, contact](double frictionCoeff) { getFrictionCoeff(contact) = frictionCoeff; }),
+                   mc_rtc::gui::IntegerInput(
+                       fmt::format(contact + " number of friction sides"),
+                       [this, contact]() { return getNbOfFrictionSides(contact); },
+                       [this, contact](int nbFrictionSides) { getNbOfFrictionSides(contact) = nbFrictionSides; }));
 
-  for(const auto contact : possibleContacts_)
-  {
-    gui.addElement(this, conesCat,
+    gui.addElement(this, contactsCat,
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
                                            [this, contact]() { return getFrictionConesTriangles(contact); }),
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
-                                           [this, contact]() { return getForcePolyTriangles(contact); }),
+                                           [this, contact]() { return getForcePolyTriangles(contact); })/*,
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
-                                           [this, contact]() { return getContactMomentTriangles(contact); }));
+                                           [this, contact]() { return getContactMomentTriangles(contact); })*/);
   }
 
   gui.addElement(
       this, CWCCat,
       mc_rtc::gui::Polyhedron("CWC forces", polyForceConfig_, [this]() { return getCWCForceTriangles(); }),
-      mc_rtc::gui::Polyhedron("CWC moments", polyMomentConfig_, [this]() { return getCWCMomentTriangles(); }),
+      /*mc_rtc::gui::Polyhedron("CWC moments", polyMomentConfig_, [this]() { return getCWCMomentTriangles(); }),*/
       mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [this]() { return getZMPTriangles(); }),
       mc_rtc::gui::Polyhedron("Zero moment region", polyZeroMomentAreaConfig_,
                               [this]() { return getZeroMomentTriangles(); }));
