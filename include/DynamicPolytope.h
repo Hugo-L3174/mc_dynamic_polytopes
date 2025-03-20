@@ -65,12 +65,34 @@ struct DynamicPolytope
     std::lock_guard<std::mutex> lock(contactSetMutex_);
     mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
     // mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
-    controllerContacts_.clear();
+    // XXX remove this map from header if switch to rbdyn contacts
     refContactTransforms_.clear();
     for(const auto & contact : contacts)
     {
-      controllerContacts_.emplace_back(contact.first);
       refContactTransforms_.emplace(contact.first, contact.second);
+    }
+
+    // if computation has not started yet, launch it
+    if(!computing_)
+    {
+      computing_ = true;
+      // signal main computation thread
+      cv_.notify_one();
+    }
+  }
+
+  void setControllerContacts(const std::map<std::string, mc_rbdyn::Contact &> & contacts)
+  {
+    std::lock_guard<std::mutex> lock(contactSetMutex_);
+    refContactTransforms_.clear();
+    contactsRBDyn_ = contacts;
+    for(const auto & contact : contacts)
+    {
+      const auto & contactName = contact.first;
+      const auto & contactObj = contact.second;
+      // XXX check if X_r_r is updated correctly at each iteraction + which one it is ? real robots ?
+      refContactTransforms_.emplace(contactName, contactObj.X_r2s_r1s().inv());
+      getFrictionCoeff(contactName) = contactObj.friction();
     }
 
     // if computation has not started yet, launch it
@@ -265,6 +287,11 @@ protected:
                                     Eigen::MatrixX3d & Normals,
                                     Eigen::VectorXd & Offsets);
 
+  // Updates the feasible polytope representation internal to rbdyn contacts
+  void updateRBDynPolytopes(const Eigen::MatrixX3d & Normals,
+                            const Eigen::VectorXd & Offsets,
+                            mc_rbdyn::Contact & contactRBDyn);
+
   // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
   void setCurrentContacts()
   {
@@ -275,12 +302,12 @@ protected:
     // take the previous set of contacts
     contactsToRemove_ = activeContacts_;
     activeContacts_.clear();
-    for(const auto contactName : controllerContacts_)
+    for(const auto & contact : refContactTransforms_)
     {
       // add every contact given to the active contacts
-      activeContacts_.emplace(contactName);
+      activeContacts_.emplace(contact.first);
       // every active contact does not need to be removed
-      contactsToRemove_.erase(contactName);
+      contactsToRemove_.erase(contact.first);
     }
   };
 
@@ -429,6 +456,8 @@ protected:
   // polytope) for distribution, and not in world frame
   std::map<std::string, sva::PTransformd> refContactTransforms_;
 
+  std::map<std::string, mc_rbdyn::Contact &> contactsRBDyn_;
+
   // map of the force scaling factors (alphas to be used to transfer between contacts)
   std::map<std::string, double> forceScalingFactors_;
 
@@ -436,9 +465,6 @@ protected:
   std::map<std::string, double> frictionCoefficients_;
   // number of sides for cones linearization, stored individually from contact name
   std::map<std::string, int> numbersOfFrictionSides_;
-
-  // intermediate names vector to be set by controller and used once per compute loop
-  std::vector<std::string> controllerContacts_;
 
   bool withMoments_;
   bool computeRegions_;
