@@ -135,9 +135,9 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
       // mc_rtc::log::info("computed normal is {}", faceNormal);
       // mc_rtc::log::info("hsNormal is {}", hsNormal);
 
-      // testing for normal direction: if normal of the triangle face * normal of the facet > 0 then we need to invert
+      // testing for normal direction: if normal of the triangle face * normal of the facet < 0 then we need to invert
       // the face (politopix and gui conventions are inverted I think)
-      if(faceNormal.dot(hsNormal) < 0.0)
+      if(faceNormal.dot(hsNormal) > 0.0)
       {
         resultTriangles.push_back({vertices.at(0), vertices.at(i + 1), vertices.at(i + 2)});
       }
