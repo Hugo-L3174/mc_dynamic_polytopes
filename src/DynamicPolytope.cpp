@@ -591,8 +591,11 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 
 void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope)
 {
-  // Initialize local Qhull environment
-  qhT * qh = (qhT *)malloc(sizeof(qhT));
+  // Memory management vars
+  int curlong, totlong;
+  // Initialize local Qhull environment + pointer to it
+  qhT qh_qh;
+  qhT * qh = &qh_qh;
   if(!qh)
   {
     mc_rtc::log::error("Qhull malloc error.");
@@ -609,7 +612,8 @@ void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shar
   if(qh_new_qhull(qh, dim, numPoints, points.data(), 0, "qhull", nullptr, nullptr))
   {
     mc_rtc::log::error("Qhull: convex envelope error.");
-    qh_freeqhull(qh, 1);
+    qh_freeqhull(qh, !qh_ALL);
+    qh_memfreeshort(qh, &curlong, &totlong);
     return;
   }
 
@@ -633,9 +637,15 @@ void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shar
     polytope->addHalfSpace(HS);
   }
 
-  // Memory free
-  qh_freeqhull(qh, 1);
-  free(qh);
+  // Memory free:
+  // Long memory
+  qh_freeqhull(qh, !qh_ALL);
+  // Short memory and memory allocator
+  qh_memfreeshort(qh, &curlong, &totlong);
+  if(curlong || totlong)
+  {
+    mc_rtc::log::error("Qhull memory: did not free {} bytes of long memory ({} pieces)", totlong, curlong);
+  }
 }
 
 void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
