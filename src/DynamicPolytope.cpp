@@ -132,6 +132,9 @@ void DynamicPolytope::computeRegions()
       std::lock_guard<std::mutex> lockFeasible(getContactMutex(forcePolyPlanesMutexes_, contactName));
       updatePlanesMatrixConstraint(forcePolytopes_.at(contactName), forcePolyPlanes_.at(contactName).first,
                                    forcePolyPlanes_.at(contactName).second);
+      std::lock_guard<std::mutex> lockContactSet(contactSetMutex_); // lock contact set for rbdyn contacts accessor
+      updateRBDynPolytopes(forcePolyPlanes_.at(contactName).first, forcePolyPlanes_.at(contactName).second,
+                           contactsRBDyn_.at(contactName));
     }
 
     dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
@@ -1272,6 +1275,14 @@ void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polyt
         -halfSpace->getCoefficient(2);
     Offsets(halfSpaceIndex) = halfSpace->getConstant();
   }
+}
+
+void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixX3d & Normals,
+                                           const Eigen::VectorXd & Offsets,
+                                           mc_rbdyn::Contact & contactRBDyn)
+{
+  mc_rbdyn::FeasiblePolytope polytope({Normals, Offsets});
+  contactRBDyn.feasiblePolytope(polytope);
 }
 
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
