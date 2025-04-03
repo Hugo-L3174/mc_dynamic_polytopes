@@ -1282,7 +1282,15 @@ void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixX3d & Normals,
                                            mc_rbdyn::Contact & contactRBDyn)
 {
   mc_rbdyn::FeasiblePolytope polytope({Normals, Offsets});
-  contactRBDyn.feasiblePolytope(polytope);
+  // Update the contact polytope of the desired robot
+  if(robot_.robotIndex() == contactRBDyn.r1Index())
+  {
+    contactRBDyn.feasiblePolytopeR1(polytope);
+  }
+  else
+  {
+    contactRBDyn.feasiblePolytopeR2(polytope);
+  }
 }
 
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)

@@ -207,6 +207,11 @@ struct DynamicPolytope
     return forcePolyPlanes_.at(contactName);
   };
 
+  const auto & robot() const noexcept
+  {
+    return robot_;
+  }
+
   // Projects the given point on the VRP region. Returns the given point if it is already inside
   Eigen::Vector3d projectPointInVRPRegion(Eigen::Vector3d testedPoint);
 
