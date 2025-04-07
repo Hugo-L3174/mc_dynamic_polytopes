@@ -133,8 +133,15 @@ void DynamicPolytope::computeRegions()
       updatePlanesMatrixConstraint(forcePolytopes_.at(contactName), forcePolyPlanes_.at(contactName).first,
                                    forcePolyPlanes_.at(contactName).second);
       std::lock_guard<std::mutex> lockContactSet(contactSetMutex_); // lock contact set for rbdyn contacts accessor
-      updateRBDynPolytopes(forcePolyPlanes_.at(contactName).first, forcePolyPlanes_.at(contactName).second,
-                           contactsRBDyn_.at(contactName));
+      try // try block in case contact was destroyed in the controller
+      {
+        updateRBDynPolytopes(forcePolyPlanes_.at(contactName).first, forcePolyPlanes_.at(contactName).second,
+                             contactsRBDyn_.at(contactName));
+      }
+      catch(const std::exception & e)
+      {
+        mc_rtc::log::error("[{}] Update {} contact failed : {}", name_, contactName, e.what());
+      }
     }
 
     dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
