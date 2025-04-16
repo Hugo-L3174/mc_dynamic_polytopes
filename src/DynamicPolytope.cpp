@@ -1302,25 +1302,26 @@ void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixX3d & Normals,
 
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
 {
-  logger.addLogEntry("perf_" + prefix + "totalLoop", this, [this]() { return dt_loop_total().count(); });
-  logger.addLogEntry("perf_" + prefix + "computeContactSet", this, [this]() { return dt_contactSet().count(); });
-  logger.addLogEntry("perf_" + prefix + "minkSum", this, [this]() { return dt_minkSum().count(); });
-  logger.addLogEntry("perf_" + prefix + "updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
-  logger.addLogEntry("perf_" + prefix + "guiTrianglesContacts", this,
+  logger.addLogEntry("perf_" + prefix + name_ + "_totalLoop", this, [this]() { return dt_loop_total().count(); });
+  logger.addLogEntry("perf_" + prefix + name_ + "_computeContactSet", this,
+                     [this]() { return dt_contactSet().count(); });
+  logger.addLogEntry("perf_" + prefix + name_ + "_minkSum", this, [this]() { return dt_minkSum().count(); });
+  logger.addLogEntry("perf_" + prefix + name_ + "_updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
+  logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesContacts", this,
                      [this]() { return dt_guiTrianglesContacts().count(); });
-  logger.addLogEntry("perf_" + prefix + "guiTrianglesRegions", this,
+  logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesRegions", this,
                      [this]() { return dt_guiTrianglesRegions().count(); });
-  logger.addLogEntry("perf_" + prefix + "zeroMomentIntersection", this,
+  logger.addLogEntry("perf_" + prefix + name_ + "_zeroMomentIntersection", this,
                      [this]() { return dt_zeroMomentInter().count(); });
   for(const auto & contact : possibleContacts_)
   {
-    logger.addLogEntry("perf_" + prefix + contact + "_frictionCone", this,
+    logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_frictionCone", this,
                        [this, contact]() { return getContact_dt_frictionCone(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + contact + "_forcePolytope", this,
+    logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_forcePolytope", this,
                        [this, contact]() { return getContact_dt_forcePolytope(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + contact + "_intersection", this,
+    logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_intersection", this,
                        [this, contact]() { return getContact_dt_intersection(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + contact + "_Total", this,
+    logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_Total", this,
                        [this, contact]() { return getContact_dt_Total(contact).count(); });
   }
 }

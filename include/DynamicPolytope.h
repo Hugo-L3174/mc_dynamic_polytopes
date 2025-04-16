@@ -90,8 +90,17 @@ struct DynamicPolytope
     {
       const auto & contactName = contact.first;
       const auto & contactObj = contact.second;
-      // XXX check if X_r_r is updated correctly at each iteraction + which one it is ? real robots ?
-      refContactTransforms_.emplace(contactName, contactObj.X_r2s_r1s().inv());
+      // XXX X_r_r is not updated automatically by default, it needs to be done in the controller
+      // FIXME identity matrix is an assumption that the contact plane is the controlled frame for friction
+      if(contactName == contactObj.r1Surface()->name())
+      {
+        refContactTransforms_.emplace(contactName, sva::PTransformd::Identity()); // contactObj.X_r2s_r1s().inv());
+      }
+      else
+      {
+        // if second robot, assume it is targeted and put identity
+        refContactTransforms_.emplace(contactName, sva::PTransformd::Identity());
+      }
       getFrictionCoeff(contactName) = contactObj.friction();
     }
 
