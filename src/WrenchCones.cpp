@@ -64,10 +64,14 @@ Eigen::MatrixXd generatePolyhedralConeHRep(int numberOfFrictionSides, Eigen::Mat
 
   // The angle to the contact normal of the friction cone is atan(mu)
   // (mu for external approximation, mu/sqrt(2) for internal, let's pick internal for H-rep)
-  // But here for hrep we want the normals of the linearized cone's faces
+  // atan(mu) will give the radian value from zero to mu. It's the one we want except we want to go
+  // from normal and outwards -> angle axis rotation from a unit axis to get the rotation matrix in the plane
+  // and then this * the contact normal
+
+  // Here for hrep we want the normals of the linearized cone's faces
   // --> there is a 90° angle to add to get the face normal
   double angle = (M_PI / 2.) + atan(m_frictionCoef / sqrt(2));
-  // This is the first face normal
+  // This is the first face normal in the plane
   Eigen::Vector3d normal = Eigen::AngleAxisd(angle, tan) * contactNormal;
 
   // step is the scale decomposition (precision) with which to compute the actual cone (linearization)
