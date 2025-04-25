@@ -109,9 +109,7 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     Eigen::Vector3d hsNormal(-halfSpaceIter.current()->getCoefficient(0), -halfSpaceIter.current()->getCoefficient(1),
                              -halfSpaceIter.current()->getCoefficient(2));
     // rotate hsNormal to world frame as well
-    // XXX this should be decommented but for some reason when it is, some planes are always inverted
-    // The error probably comes from the sortFaceVertices function
-    // hsNormal = contactPose.translation() + contactPose.rotation().transpose() * hsNormal;
+    hsNormal = contactPose.rotation().transpose() * hsNormal;
     hsNormal.normalize();
 
     // Safety check: sometimes facets have zero vertices idk why, probably degenerated faces. The sorting throws if this
