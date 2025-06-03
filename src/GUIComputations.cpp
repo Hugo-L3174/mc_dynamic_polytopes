@@ -150,7 +150,8 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
 void update6DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultMomentTriangles,
                                     std::vector<std::array<Eigen::Vector3d, 3>> & resultForceTriangles,
-                                    double guiScale)
+                                    double guiScale,
+                                    sva::PTransformd contactPose)
 {
   resultMomentTriangles.clear();
   resultForceTriangles.clear();
@@ -161,43 +162,52 @@ void update6DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
   resultForceTriangles.reserve(polytope->numberOfHalfSpaces());
   // For each half space in the polytope, get the generators that compose it
   constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> halfSpaceIter(polytope->getListOfHalfSpaces());
-  constIteratorOfListOfGeometricObjects<boost::shared_ptr<Generator_Rn>> generatorIter(polytope->getListOfGenerators());
 
-  // get a point that we know is inside the polytope to compute the faces normals
-  // Here the first 3 elements are moments, 3 after are forces: the 6d grav center makes both 3d centers
-  boost::numeric::ublas::vector<double> insidePoint(Rn::getDimension());
-  TopGeomTools::gravityCenter(polytope, insidePoint);
-  // recast it in eigen for practical reasons
-  Eigen::Vector3d insideMoment(insidePoint[0], insidePoint[1], insidePoint[2]);
-  Eigen::Vector3d insideForce(insidePoint[3], insidePoint[4], insidePoint[5]);
+  // This fills the list with vectors of the ids of the generators that compose each face
+  std::vector<std::vector<unsigned int>> listOfGeneratorsPerFacet;
+  polytope->getGeneratorsPerFacet(listOfGeneratorsPerFacet);
 
   for(halfSpaceIter.begin(); halfSpaceIter.end() != true; halfSpaceIter.next())
   {
+    // get the vector of the indexes of this face's generators
+    ListOfFaces listOfFacetVertices = listOfGeneratorsPerFacet.at(halfSpaceIter.currentIteratorNumber());
     // mc_rtc::log::info("Face index is {}, it has {} generators", halfSpaceIter.currentIteratorNumber(),
-    //                   listOfGeneratorsPerFacet.at(halfSpaceIter.currentIteratorNumber()).size());
-    std::vector<Eigen::Vector3d> verticesMoments;
-    std::vector<Eigen::Vector3d> verticesForces;
-    for(generatorIter.begin(); generatorIter.end() != true; generatorIter.next())
+    //                   listOfFacetVertices.size());
+
+    std::vector<Eigen::Vector3d> forceVertices;
+    std::vector<Eigen::Vector3d> momentVertices;
+
+    // get vertices coordinates of this face to build the triangles composing it
+    for(int faceGens = 0; faceGens < listOfFacetVertices.size(); faceGens++)
     {
-      // each generator has several facets, so iterate his facets until finding the current one
-      for(size_t i = 0; i < generatorIter.current()->numberOfFacets(); i++)
-      {
-        if(generatorIter.current()->getFacet(i) == halfSpaceIter.current())
-        {
-          // mc_rtc::log::info("Generator {} belongs to face {}, adding it.", generatorIter.currentIteratorNumber(),
-          // halfSpaceIter.currentIteratorNumber());
-          // This generator is one of the current halfspace vertex
-          Eigen::Vector3d vertexMoment(generatorIter.current()->getCoordinate(0),
-                                       generatorIter.current()->getCoordinate(1),
-                                       generatorIter.current()->getCoordinate(2));
-          Eigen::Vector3d vertexForce(generatorIter.current()->getCoordinate(3),
-                                      generatorIter.current()->getCoordinate(4),
-                                      generatorIter.current()->getCoordinate(5));
-          verticesMoments.push_back(vertexMoment * guiScale);
-          verticesForces.push_back(vertexForce * guiScale);
-        }
-      }
+      int generatorIndex = listOfFacetVertices.at(faceGens);
+      // mc_rtc::log::info("Generator {} belongs to face {}, adding it.", generatorIndex,
+      //                   halfSpaceIter.currentIteratorNumber());
+      // This generator is one of the current halfspace vertex
+      Eigen::Vector3d momentVertex(polytope->getGenerator(generatorIndex)->getCoordinate(0),
+                                   polytope->getGenerator(generatorIndex)->getCoordinate(1),
+                                   polytope->getGenerator(generatorIndex)->getCoordinate(2));
+
+      Eigen::Vector3d forceVertex(polytope->getGenerator(generatorIndex)->getCoordinate(3),
+                                  polytope->getGenerator(generatorIndex)->getCoordinate(4),
+                                  polytope->getGenerator(generatorIndex)->getCoordinate(5));
+
+      momentVertex *= guiScale;
+      forceVertex *= guiScale;
+
+      // vertex pose is X_c_v (contact frame) but we want it in world frame
+      // X_0_v = X_c_v * X_0_c
+      // 3d pose rotated will be pt.r_ + pt.E_.transpose() * r_
+      // vertex = contactPose.translation() + contactPose.rotation().transpose() * vertex;
+      momentVertex = (sva::PTransformd(momentVertex) * contactPose).translation();
+      momentVertices.push_back(momentVertex);
+
+      forceVertex = (sva::PTransformd(forceVertex) * contactPose).translation();
+      forceVertices.push_back(momentVertex);
+
+      // mc_rtc::log::info("Vertex coords: {}", vertex.transpose());
     }
+
     /* we got all vertices of the face in vertices vector, now order them for triangle array, ie order vertices so that
     the normal is towards the exterior
     We don't necessarily have only 3 vertices for this face! if not, more calculations are necessary to decompose
@@ -205,40 +215,85 @@ void update6DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     we assume the vertices were ordered + faces are convex: then we decompose into triangles by taking the first
     vertex and making a face with the two neighbors until the second neighbor is the last vertex
     */
-    auto nbVertices = verticesForces.size();
-    for(auto i = 0; i < nbVertices - 2; i++)
+    auto nbForceVertices = forceVertices.size();
+    auto nbMomentVertices = momentVertices.size();
+    // mc_rtc::log::info("There are {} vertices", nbVertices);
+
+    // XXX POLITOPIX: since politopix convention seems to be inverted for Hrep inequalities
+    // i.e. they check that a0 + a1*x1 + a2*x2 ... >= 0 to belong inside
+    // we push inverted normals
+    Eigen::Vector3d hsNormalMoment(-halfSpaceIter.current()->getCoefficient(0),
+                                   -halfSpaceIter.current()->getCoefficient(1),
+                                   -halfSpaceIter.current()->getCoefficient(2));
+
+    Eigen::Vector3d hsNormalForce(-halfSpaceIter.current()->getCoefficient(3),
+                                  -halfSpaceIter.current()->getCoefficient(4),
+                                  -halfSpaceIter.current()->getCoefficient(5));
+    // rotate hsNormal to world frame as well
+    hsNormalMoment = contactPose.rotation().transpose() * hsNormalMoment;
+    hsNormalMoment.normalize();
+    hsNormalForce = contactPose.rotation().transpose() * hsNormalForce;
+    hsNormalForce.normalize();
+
+    // Safety check: sometimes facets have zero vertices idk why, probably degenerated faces. The sorting throws if this
+    // is the case
+    if(nbMomentVertices != 0)
+    {
+      // ordering the vertices
+      sortFaceVertices(momentVertices, hsNormalMoment);
+    }
+    if(nbForceVertices != 0)
+    {
+      // ordering the vertices
+      sortFaceVertices(forceVertices, hsNormalForce);
+    }
+
+    // add nbVertices<3 condition because nbVertices -2 can be negative (degen faces) and with condition on negative int
+    // is evaluated to true
+    for(auto i = 0; (i < nbMomentVertices - 2) && (nbMomentVertices >= 3); i++)
     {
       // mc_rtc::log::info("Making a triangle with vertices {}, {} and {}", 0, i+1, i+2);
       // make a triangle with vertices 0, i+1, i+2 and orient and emplace it normally
-      Eigen::Vector3d faceNormalMoments;
-      Eigen::Vector3d faceNormalForces;
-      faceNormalMoments =
-          (verticesMoments.at(i + 1) - verticesMoments.at(0)).cross(verticesMoments.at(i + 2) - verticesMoments.at(0));
-      faceNormalMoments.normalize();
-      faceNormalForces =
-          (verticesForces.at(i + 1) - verticesForces.at(0)).cross(verticesForces.at(i + 2) - verticesForces.at(0));
-      faceNormalForces.normalize();
+      Eigen::Vector3d faceNormal;
+      faceNormal =
+          (momentVertices.at(i + 1) - momentVertices.at(0)).cross(momentVertices.at(i + 2) - momentVertices.at(0));
+      // faceNormal *= -1.0;
+      faceNormal.normalize();
+      // mc_rtc::log::info("computed normal is {}", faceNormal);
+      // mc_rtc::log::info("hsNormal is {}", hsNormal);
 
-      auto faceOffset = halfSpaceIter.current()->getConstant();
-
-      // testing for normal direction: if inside point of the face * normal - face offset > 0 then we need to invert
-      // the face
-      if(insideMoment.dot(faceNormalMoments) - faceOffset < 0.0)
+      // testing for normal direction: if normal of the triangle face * normal of the facet < 0 then we need to invert
+      // the face (politopix and gui conventions are inverted I think)
+      if(faceNormal.dot(hsNormalMoment) > 0.0)
       {
-        resultMomentTriangles.push_back({verticesMoments.at(0), verticesMoments.at(i + 1), verticesMoments.at(i + 2)});
+        resultMomentTriangles.push_back({momentVertices.at(0), momentVertices.at(i + 1), momentVertices.at(i + 2)});
       }
       else
       {
-        resultMomentTriangles.push_back({verticesMoments.at(0), verticesMoments.at(i + 2), verticesMoments.at(i + 1)});
+        resultMomentTriangles.push_back({momentVertices.at(0), momentVertices.at(i + 2), momentVertices.at(i + 1)});
       }
+    }
 
-      if(insideForce.dot(faceNormalForces) - faceOffset < 0.0)
+    for(auto i = 0; (i < nbForceVertices - 2) && (nbForceVertices >= 3); i++)
+    {
+      // mc_rtc::log::info("Making a triangle with vertices {}, {} and {}", 0, i+1, i+2);
+      // make a triangle with vertices 0, i+1, i+2 and orient and emplace it normally
+      Eigen::Vector3d faceNormal;
+      faceNormal = (forceVertices.at(i + 1) - forceVertices.at(0)).cross(forceVertices.at(i + 2) - forceVertices.at(0));
+      // faceNormal *= -1.0;
+      faceNormal.normalize();
+      // mc_rtc::log::info("computed normal is {}", faceNormal);
+      // mc_rtc::log::info("hsNormal is {}", hsNormal);
+
+      // testing for normal direction: if normal of the triangle face * normal of the facet < 0 then we need to invert
+      // the face (politopix and gui conventions are inverted I think)
+      if(faceNormal.dot(hsNormalForce) > 0.0)
       {
-        resultForceTriangles.push_back({verticesForces.at(0), verticesForces.at(i + 1), verticesForces.at(i + 2)});
+        resultForceTriangles.push_back({forceVertices.at(0), forceVertices.at(i + 1), forceVertices.at(i + 2)});
       }
       else
       {
-        resultForceTriangles.push_back({verticesForces.at(0), verticesForces.at(i + 2), verticesForces.at(i + 1)});
+        resultForceTriangles.push_back({forceVertices.at(0), forceVertices.at(i + 2), forceVertices.at(i + 1)});
       }
     }
   }

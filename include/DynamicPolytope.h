@@ -21,7 +21,7 @@
 
 #include <libqhull_r/qhull_ra.h>
 
-using HRepX3d = std::pair<Eigen::MatrixX3d, Eigen::VectorXd>;
+using HRepXd = std::pair<Eigen::MatrixXd, Eigen::VectorXd>;
 
 struct ContactTimers
 {
@@ -143,7 +143,8 @@ struct DynamicPolytope
                                             const sva::PTransformd X_r1_r2,
                                             boost::shared_ptr<Polytope_Rn> & frictionCone,
                                             std::mutex & frictionConeMutex,
-                                            double m_frictionCoef);
+                                            double m_frictionCoef,
+                                            int dim);
 
   // compute the contact friction cone into a bounded polytope from the Vrep, with planes formed from the bounding
   // volume computation
@@ -169,7 +170,8 @@ struct DynamicPolytope
                                          const mc_rbdyn::Robot & robot,
                                          boost::shared_ptr<Polytope_Rn> & actuationPolytope,
                                          std::mutex & forcePolyMutex,
-                                         double forceScalingFactor);
+                                         double forceScalingFactor,
+                                         int dim);
 
   // compute friction cone and force polytope, then intersect both into the friction cone object
   void buildFeasiblePolytopeFromContact(const std::string contactName,
@@ -187,7 +189,7 @@ struct DynamicPolytope
   // ------------------------------------------------------> Plane constraints getters
 
   // Returns the internal normals matrix and offsets vector of the eCMP region for QP constraint or check
-  const HRepX3d & getVRPPlanes()
+  const HRepXd & getVRPPlanes()
   {
     std::lock_guard<std::mutex> lock(VRPPlanesMutex_);
     return DCMVRPPlanes_;
@@ -195,7 +197,7 @@ struct DynamicPolytope
 
   // Returns the internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
   // constraint or check
-  const HRepX3d & getZeroMomentPlanes()
+  const HRepXd & getZeroMomentPlanes()
   {
     std::lock_guard<std::mutex> lock(zeroMomentPlanesMutex_);
     return zeroMomentPlanes_;
@@ -203,14 +205,14 @@ struct DynamicPolytope
 
   // Returns the desired cone H representation
   // Prefer using the force polytope planes if they are computed
-  const HRepX3d & getFrictionConePlanes(const std::string & contactName)
+  const HRepXd & getFrictionConePlanes(const std::string & contactName)
   {
     std::lock_guard<std::mutex> lock(getContactMutex(frictionConesPlanesMutexes_, contactName));
     return frictionConesPlanes_.at(contactName);
   };
 
   // Returns the desired contact force polytope H representation
-  const HRepX3d & getForcePolyPlanes(const std::string & contactName)
+  const HRepXd & getForcePolyPlanes(const std::string & contactName)
   {
     std::lock_guard<std::mutex> lock(getContactMutex(forcePolyPlanesMutexes_, contactName));
     return forcePolyPlanes_.at(contactName);
@@ -298,11 +300,11 @@ protected:
   // them in usual convention (normals towards exterior)
   // TODO template this for polyhedral cones
   void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
-                                    Eigen::MatrixX3d & Normals,
+                                    Eigen::MatrixXd & Normals,
                                     Eigen::VectorXd & Offsets);
 
   // Updates the feasible polytope representation internal to rbdyn contacts
-  void updateRBDynPolytopes(const Eigen::MatrixX3d & Normals,
+  void updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
                             const Eigen::VectorXd & Offsets,
                             mc_rbdyn::Contact & contactRBDyn);
 
@@ -326,7 +328,7 @@ protected:
   };
 
   // Computes the convex hull of the set of points given (Qhull format) and builds the halfspaces in the given polytope
-  void computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope);
+  void computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope, int dim);
 
   Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
 
@@ -538,12 +540,12 @@ protected:
   std::mutex zeroMomentTrianglesMutex_;
 
   // Internal matrices of planes and offsets of the regions for constraints
-  HRepX3d DCMVRPPlanes_;
+  HRepXd DCMVRPPlanes_;
 
-  HRepX3d zeroMomentPlanes_;
+  HRepXd zeroMomentPlanes_;
 
-  std::map<std::string, HRepX3d> frictionConesPlanes_;
-  std::map<std::string, HRepX3d> forcePolyPlanes_;
+  std::map<std::string, HRepXd> frictionConesPlanes_;
+  std::map<std::string, HRepXd> forcePolyPlanes_;
 
   // timers to measure computation times
   mc_rtc::duration_ms dt_loop_total_;

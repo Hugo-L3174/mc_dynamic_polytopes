@@ -5,14 +5,15 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
                                  const mc_rtc::Configuration & dynamicPolyConfig)
 : name_(fmt::format("DynamicPolytope_" + name)), robot_(robot), config_(dynamicPolyConfig)
 {
-  // Init dimension
-  Rn::setDimension(3);
-  Rn::setTolerance(1.e-07);
-
   possibleContacts_ = dynamicPolyConfig("possibleContacts", std::set<std::string>{"LeftFoot", "RightFoot"});
   withMoments_ = dynamicPolyConfig("withMoments", false);
   computeRegions_ = dynamicPolyConfig("computeRegions", true);
   HrepMode_ = dynamicPolyConfig("HrepMode", false);
+
+  // Init dimension
+  int dim = withMoments_ ? 6 : 3;
+  Rn::setDimension(dim);
+  Rn::setTolerance(1.e-07);
 
   double defaultForceScale = 1;
   int defaultFrictionSides = 5;
@@ -36,7 +37,7 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     boost::shared_ptr<Polytope_Rn> newMomentCone(new Polytope_Rn());
     frictionConesMoments_.emplace(contact, newMomentCone);
 
-    HRepX3d newPlanes;
+    HRepXd newPlanes;
     // Here initialize planes as simple friction cones to have a sane constraint at first iteration
     // The rotX_r1_r2 matrix would be the identity in a default case
     newPlanes.first =
@@ -100,6 +101,8 @@ void DynamicPolytope::computeRegions()
 
   while(computing_)
   {
+    withMoments_ ? Rn::setDimension(6) : Rn::setDimension(3);
+
     auto start_loop = mc_rtc::clock::now();
     // Lock contact set mutex, set active contacts to be used in internal loops then unlock mutex
     setCurrentContacts();
@@ -209,9 +212,9 @@ void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionS
                                                            const sva::PTransformd X_r1_r2,
                                                            boost::shared_ptr<Polytope_Rn> & frictionCone,
                                                            std::mutex & frictionConeMutex,
-                                                           double m_frictionCoef)
+                                                           double m_frictionCoef,
+                                                           int dim)
 {
-  int dim = 3;
   boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
 
   // get the friction cones planes
@@ -225,10 +228,23 @@ void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionS
   for(auto i = 0; i < Hrep.rows(); i++)
   {
     boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
-    boost::numeric::ublas::vector<double> normal(3);
-    normal.insert_element(0, Hrep.row(i).coeff(0));
-    normal.insert_element(1, Hrep.row(i).coeff(1));
-    normal.insert_element(2, Hrep.row(i).coeff(2));
+    boost::numeric::ublas::vector<double> normal(dim);
+    if(dim == 3)
+    {
+      normal.insert_element(0, Hrep.row(i).coeff(0));
+      normal.insert_element(1, Hrep.row(i).coeff(1));
+      normal.insert_element(2, Hrep.row(i).coeff(2));
+    }
+    if(dim == 6)
+    {
+      normal.insert_element(0, 0.);
+      normal.insert_element(1, 0.);
+      normal.insert_element(2, 0.);
+      normal.insert_element(3, Hrep.row(i).coeff(0));
+      normal.insert_element(4, Hrep.row(i).coeff(1));
+      normal.insert_element(5, Hrep.row(i).coeff(2));
+    }
+
     hs->setCoefficients(-normal);
     hs->setConstant(0.0);
     newCone->addHalfSpace(hs);
@@ -319,9 +335,9 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
                                                         const mc_rbdyn::Robot & robot,
                                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
                                                         std::mutex & forcePolyMutex,
-                                                        double forceScalingFactor)
+                                                        double forceScalingFactor,
+                                                        int dim)
 {
-  int dim = 3;
   boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
 
   const int n_var = 6;
@@ -438,11 +454,24 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
       if(!Aineq.row(i).isZero())
       {
         boost::shared_ptr<HalfSpace_Rn> hs(new HalfSpace_Rn(dim));
-        boost::numeric::ublas::vector<double> coefficients(3);
-        // Setting coefficients as force elements of the ineq matrix (3 last columns)
-        coefficients.insert_element(0, Aineq.coeff(i, 3));
-        coefficients.insert_element(1, Aineq.coeff(i, 4));
-        coefficients.insert_element(2, Aineq.coeff(i, 5));
+        boost::numeric::ublas::vector<double> coefficients(dim);
+        // Setting coefficients as force or wrenches elements of the ineq matrix (3 last columns or all 6)
+        if(dim == 3)
+        {
+          coefficients.insert_element(0, Aineq.coeff(i, 3));
+          coefficients.insert_element(1, Aineq.coeff(i, 4));
+          coefficients.insert_element(2, Aineq.coeff(i, 5));
+        }
+        if(dim == 6)
+        {
+          coefficients.insert_element(0, Aineq.coeff(i, 0));
+          coefficients.insert_element(1, Aineq.coeff(i, 1));
+          coefficients.insert_element(2, Aineq.coeff(i, 2));
+          coefficients.insert_element(3, Aineq.coeff(i, 3));
+          coefficients.insert_element(4, Aineq.coeff(i, 4));
+          coefficients.insert_element(5, Aineq.coeff(i, 5));
+        }
+
         hs->setCoefficients(-coefficients);
         hs->setConstant(bineq.coeff(i));
         newPoly->addHalfSpace(hs);
@@ -552,7 +581,13 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
       // mc_rtc::log::info("Wrench vertex {} for {} is {}", itCounter, contactName,
       //                   wrenchVertex.segment(3, 3).transpose());
 
-      // Insert force elements (3, 4, 5 of wrench 6D vector)
+      // Insert force elements (3, 4, 5 of wrench 6D vector) or all wrench
+      if(dim == 6)
+      {
+        qhullVect.emplace_back(wrenchVertex.coeff(0));
+        qhullVect.emplace_back(wrenchVertex.coeff(1));
+        qhullVect.emplace_back(wrenchVertex.coeff(2));
+      }
 
       qhullVect.emplace_back(wrenchVertex.coeff(3));
       qhullVect.emplace_back(wrenchVertex.coeff(4));
@@ -561,7 +596,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
       itCounter++;
     }
 
-    computeQhullHrep(qhullVect, newPoly);
+    computeQhullHrep(qhullVect, newPoly, dim);
     mc_rtc::duration_ms end_Qhull = mc_rtc::clock::now() - start_Qhull;
     // mc_rtc::log::info("time to run force poly Qhull {} : {}ms", contactName, end_Qhull.count());
 
@@ -599,7 +634,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   actuationPolytope = newPoly;
 }
 
-void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope)
+void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope, int dim)
 {
   // Memory management vars
   int curlong, totlong;
@@ -615,7 +650,6 @@ void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shar
   // QHull init to be thread safe
   qh_zero(qh, nullptr);
 
-  int dim = 3;
   int numPoints = points.size() / dim;
 
   // Compute convex envelope (string arg for cpp binding)
@@ -635,10 +669,10 @@ void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shar
     // Qhull convention is a0 + a1*x1 + a2*x2+ ... = 0
     // This means offset should be negative for inequality
     if(!facet->normal) continue;
-    HS.reset(new HalfSpace_Rn(3));
-    // Getting all 3 coefficients of the facet normal
+    HS.reset(new HalfSpace_Rn(dim));
+    // Getting all coefficients of the facet normal
     // (negative for politopix convention)
-    for(int coord_count = 0; coord_count < 3; coord_count++)
+    for(int coord_count = 0; coord_count < dim; coord_count++)
     {
       HS->setCoefficient(coord_count, -facet->normal[coord_count]);
     }
@@ -671,14 +705,16 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
                                                        ContactTimers & timers)
 {
   // sva::PTransformd contactPose = robot.surfacePose(contactName);
+  int dim = Rn::getDimension() == 3 ? 3 : 6;
   auto start_forcePoly = mc_rtc::clock::now();
 
   // update the correct force polytope in the map
-  buildActuationPolytopeFromContact(contactName, robot, actuationPolytope, forcePolyMutex, forceScalingFactor);
+  buildActuationPolytopeFromContact(contactName, robot, actuationPolytope, forcePolyMutex, forceScalingFactor, dim);
   timers.dt_forcePolytope = mc_rtc::clock::now() - start_forcePoly;
 
   auto start_frictionCone = mc_rtc::clock::now();
-  buildFrictionConeFromContactWithHrep(numberOfFrictionSides, X_r1_r2, frictionCone, frictionConeMutex, frictionCoeff);
+  buildFrictionConeFromContactWithHrep(numberOfFrictionSides, X_r1_r2, frictionCone, frictionConeMutex, frictionCoeff,
+                                       dim);
   timers.dt_frictionCone = mc_rtc::clock::now() - start_frictionCone;
 
   auto start_intersection = mc_rtc::clock::now();
@@ -707,7 +743,11 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   {
     actuationPolytope->addHalfSpace(iteHSB.current());
   }
-  politopixAPI::computeDoubleDescriptionWithoutCheck(actuationPolytope, 3000);
+
+  if(dim == 3)
+  {
+    politopixAPI::computeDoubleDescriptionWithoutCheck(actuationPolytope, 3000);
+  }
 
   // politopixAPI::computeIntersectionWithoutCheck(actuationPolytope, frictionCone);
 
@@ -723,7 +763,6 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
 
 void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot & robot)
 {
-  Rn::setDimension(3);
   auto frictionCoeff = 0.7;
   auto nbFrictionSides = 5;
   auto maxForce = 250.;
@@ -736,7 +775,7 @@ void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot &
     if(!withMoments_)
     {
       buildFrictionConeFromContactWithHrep(nbFrictionSides, X_r1_r2, frictionCones_.at(contactName),
-                                           getContactMutex(frictionConesMutexes_, contactName), frictionCoeff);
+                                           getContactMutex(frictionConesMutexes_, contactName), frictionCoeff, 3);
     }
     else
     {
@@ -760,13 +799,12 @@ void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & rob
   for(const auto contactName : activeContacts_)
   {
     buildActuationPolytopeFromContact(contactName, robot, forcePolytopes_.at(contactName),
-                                      getContactMutex(forcePolyMutexes_, contactName), forceScalingFactor);
+                                      getContactMutex(forcePolyMutexes_, contactName), forceScalingFactor, 3);
   }
 }
 
 void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot)
 {
-  Rn::setDimension(3);
   std::lock_guard<std::mutex> lock(contactSetMutex_);
   for(const auto & contactName : activeContacts_)
   {
@@ -976,7 +1014,7 @@ void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
   qhullVect.emplace_back(comPosition.y());
   qhullVect.emplace_back(comPosition.z());
 
-  computeQhullHrep(qhullVect, newZMPPoly);
+  computeQhullHrep(qhullVect, newZMPPoly, dim);
 
   politopixAPI::computeDoubleDescriptionWithoutCheck(newZMPPoly, 3000);
 
@@ -1113,7 +1151,7 @@ bool DynamicPolytope::checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn
     retResultPolitopix = true;
   }
 
-  Eigen::MatrixX3d Normals;
+  Eigen::MatrixXd Normals;
   Eigen::VectorXd Offsets;
   updatePlanesMatrixConstraint(polytope, Normals, Offsets);
   Eigen::Vector3d testEigen(gravCenter(0), gravCenter(1), gravCenter(2));
@@ -1160,35 +1198,44 @@ void DynamicPolytope::updateTrianglesContactsGUIPolitopix()
   auto contactsToBeRemoved = contactsToRemove_;
   contactSetMutex_.unlock();
 
+  int dim = Rn::getDimension() == 6 ? 6 : 3;
+
   for(const auto & contact : activeContactSet)
   {
     auto contactPose = robot_.surfacePose(contact);
-    getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
-    getContactMutex(frictionConesMutexes_, contact).lock();
-    update3DPolyTrianglesPolitopix(frictionCones_.at(contact), frictionConesTrianglesMap_.at(contact), guiScale_,
-                                   contactPose);
-    getContactMutex(frictionConesMutexes_, contact).unlock();
-    getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
-    if(withMoments_)
+
+    if(forcePolytopes_.at(contact)->dimension() == 3)
+    {
+      getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
+      getContactMutex(frictionConesMutexes_, contact).lock();
+      update3DPolyTrianglesPolitopix(frictionCones_.at(contact), frictionConesTrianglesMap_.at(contact), guiScale_,
+                                     contactPose);
+      getContactMutex(frictionConesMutexes_, contact).unlock();
+      getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
+
+      getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
+      getContactMutex(forcePolyMutexes_, contact).lock();
+      update3DPolyTrianglesPolitopix(forcePolytopes_.at(contact), forcePolyTrianglesMap_.at(contact), guiScale_,
+                                     contactPose);
+      getContactMutex(forcePolyMutexes_, contact).unlock();
+      getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
+    }
+    else
     {
       getContactMutex(momentTrianglesMutexes_, contact).lock();
-      update3DPolyTrianglesPolitopix(frictionConesMoments_.at(contact), momentPolytopesTrianglesMap_.at(contact),
-                                     guiScale_, contactPose);
+      getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
+      update6DPolyTrianglesPolitopix(forcePolytopes_.at(contact), momentPolytopesTrianglesMap_.at(contact),
+                                     forcePolyTrianglesMap_.at(contact), guiScale_, contactPose);
       getContactMutex(momentTrianglesMutexes_, contact).unlock();
+      getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
     }
-    getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
-    getContactMutex(forcePolyMutexes_, contact).lock();
-    update3DPolyTrianglesPolitopix(forcePolytopes_.at(contact), forcePolyTrianglesMap_.at(contact), guiScale_,
-                                   contactPose);
-    getContactMutex(forcePolyMutexes_, contact).unlock();
-    getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
   }
   for(const auto & contact : contactsToBeRemoved)
   {
     getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
     frictionConesTrianglesMap_.at(contact).clear();
     getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
-    if(withMoments_)
+    if(dim == 6)
     {
       getContactMutex(momentTrianglesMutexes_, contact).lock();
       momentPolytopesTrianglesMap_.at(contact).clear();
@@ -1263,13 +1310,13 @@ void DynamicPolytope::updateTrianglesRegionsGUIPolitopix()
 }
 
 void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
-                                                   Eigen::MatrixX3d & Normals,
+                                                   Eigen::MatrixXd & Normals,
                                                    Eigen::VectorXd & Offsets)
 {
-  // XXX might be interesting to use a vector of mc_rbdyn::Plane in the future ? but matrixXd would be easier to put in
-  // blocks in a handmade QP where if planes we would need a for loop on every plane to fill the QP matrix
   int nbOfPlanes = polytope->numberOfHalfSpaces();
-  Normals.resize(nbOfPlanes, 3);
+  int dim;
+  polytope->dimension() == 6 ? dim = 6 : dim = 3;
+  Normals.resize(nbOfPlanes, dim);
   Offsets.resize(nbOfPlanes);
 
   for(int halfSpaceIndex = 0; halfSpaceIndex < nbOfPlanes; halfSpaceIndex++)
@@ -1278,18 +1325,28 @@ void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polyt
     // XXX POLITOPIX: since politopix convention seems to be inverted for Hrep inequalities
     // i.e. they check that a0 + a1*x1 + a2*x2 ... >= 0 to belong inside
     // we push inverted normals
-    Normals.row(halfSpaceIndex) << -halfSpace->getCoefficient(0), -halfSpace->getCoefficient(1),
-        -halfSpace->getCoefficient(2);
+    if(dim == 3)
+    {
+      Normals.row(halfSpaceIndex) << -halfSpace->getCoefficient(0), -halfSpace->getCoefficient(1),
+          -halfSpace->getCoefficient(2);
+    }
+    else
+    {
+      Normals.row(halfSpaceIndex) << -halfSpace->getCoefficient(0), -halfSpace->getCoefficient(1),
+          -halfSpace->getCoefficient(2), -halfSpace->getCoefficient(3), -halfSpace->getCoefficient(4),
+          -halfSpace->getCoefficient(5);
+    }
     Offsets(halfSpaceIndex) = halfSpace->getConstant();
   }
 }
 
-void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixX3d & Normals,
+void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
                                            const Eigen::VectorXd & Offsets,
                                            mc_rbdyn::Contact & contactRBDyn)
 {
   mc_rbdyn::FeasiblePolytope polytope({Normals, Offsets});
   // Update the contact polytope of the desired robot
+  // FIXME : This contact can be dead at this point, find a way to catch the segfault
   if(robot_.robotIndex() == contactRBDyn.r1Index())
   {
     contactRBDyn.feasiblePolytopeR1(polytope);
@@ -1387,7 +1444,9 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
           "Compute explicit regions", [this]() { return computeRegions_; },
           [this]() { computeRegions_ = !computeRegions_; }),
       mc_rtc::gui::Checkbox(
-          "Compute force poly from Hrep", [this]() { return HrepMode_; }, [this]() { HrepMode_ = !HrepMode_; }));
+          "Compute force poly from Hrep", [this]() { return HrepMode_; }, [this]() { HrepMode_ = !HrepMode_; }),
+      mc_rtc::gui::Checkbox(
+          "Compute moments", [this]() { return withMoments_; }, [this]() { withMoments_ = !withMoments_; }));
 
   for(const auto contact : possibleContacts_)
   {
@@ -1410,9 +1469,9 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
                                            [this, contact]() { return getFrictionConesTriangles(contact); }),
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
-                                           [this, contact]() { return getForcePolyTriangles(contact); })/*,
+                                           [this, contact]() { return getForcePolyTriangles(contact); }),
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
-                                           [this, contact]() { return getContactMomentTriangles(contact); })*/);
+                                           [this, contact]() { return getContactMomentTriangles(contact); }));
   }
 
   gui.addElement(
