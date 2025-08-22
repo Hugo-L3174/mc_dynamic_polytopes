@@ -485,6 +485,10 @@ protected:
   bool withMoments_;
   bool computeRegions_;
   bool HrepMode_;
+  // Options for easier display of the computation steps
+  bool combineWithFriction_ = true;
+  bool DDfrictionCones_ = false;
+  bool withVRPOffset_ = true;
 
   // politopix
 

@@ -9,6 +9,7 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
   withMoments_ = dynamicPolyConfig("withMoments", false);
   computeRegions_ = dynamicPolyConfig("computeRegions", true);
   HrepMode_ = dynamicPolyConfig("HrepMode", false);
+  combineWithFriction_ = dynamicPolyConfig("withFriction", true);
 
   // Init dimension
   int dim = withMoments_ ? 6 : 3;
@@ -736,12 +737,21 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   //                   forcePolytopes_.at(contactName)->numberOfHalfSpaces(),
   //                   forcePolytopes_.at(contactName)->numberOfGenerators());
 
+  // Run DD on friction cones for display (makes it wrong because polyhedral cones should not be bounded)
+  if(DDfrictionCones_)
+  {
+    politopixAPI::computeDoubleDescriptionWithoutCheck(frictionCone, 1000);
+  }
+
   // Adding friction cone planes to force planes before running DD
 
-  constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> iteHSB(frictionCone->getListOfHalfSpaces());
-  for(iteHSB.begin(); iteHSB.end() != true; iteHSB.next())
+  if(combineWithFriction_)
   {
-    actuationPolytope->addHalfSpace(iteHSB.current());
+    constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> iteHSB(frictionCone->getListOfHalfSpaces());
+    for(iteHSB.begin(); iteHSB.end() != true; iteHSB.next())
+    {
+      actuationPolytope->addHalfSpace(iteHSB.current());
+    }
   }
 
   if(dim == 3)
@@ -1060,7 +1070,10 @@ void DynamicPolytope::computeVRPRegionWithMinkSum()
   computeZeroMomentIntersection();
 
   // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
-  VRPtranslation(robot_.com().z());
+  if(withVRPOffset_)
+  {
+    VRPtranslation(robot_.com().z());
+  }
 
   // Update VRP planes internal variables to be fetched by controller
   auto start_updatePlanes = mc_rtc::clock::now();
@@ -1448,6 +1461,18 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
       mc_rtc::gui::Checkbox(
           "Compute moments", [this]() { return withMoments_; }, [this]() { withMoments_ = !withMoments_; }));
 
+  // Debug options for the GUI
+  gui.addElement(
+      this, category,
+      mc_rtc::gui::Checkbox(
+          "Combine with frictions", [this]() { return combineWithFriction_; },
+          [this]() { combineWithFriction_ = !combineWithFriction_; }),
+      mc_rtc::gui::Checkbox(
+          "DD friction cones", [this]() { return DDfrictionCones_; },
+          [this]() { DDfrictionCones_ = !DDfrictionCones_; }),
+      mc_rtc::gui::Checkbox(
+          "With eCMP-VRP offset", [this]() { return withVRPOffset_; }, [this]() { withVRPOffset_ = !withVRPOffset_; }));
+
   for(const auto contact : possibleContacts_)
   {
     gui.addElement(this, coeffsCat,
@@ -1469,9 +1494,9 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
                                            [this, contact]() { return getFrictionConesTriangles(contact); }),
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
-                                           [this, contact]() { return getForcePolyTriangles(contact); }),
+                                           [this, contact]() { return getForcePolyTriangles(contact); })/*,
                    mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
-                                           [this, contact]() { return getContactMomentTriangles(contact); }));
+                                           [this, contact]() { return getContactMomentTriangles(contact); })*/);
   }
 
   gui.addElement(
