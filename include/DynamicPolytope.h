@@ -33,10 +33,10 @@ constexpr double defaultFrictionCoeff = 0.5;
 
 struct ContactTimers
 {
-  mc_rtc::duration_ms dt_frictionCone;
-  mc_rtc::duration_ms dt_forcePolytope;
-  mc_rtc::duration_ms dt_intersection;
-  mc_rtc::duration_ms dt_contactTotal;
+  mc_rtc::duration_ms dt_frictionCone = mc_rtc::duration_ms::zero();
+  mc_rtc::duration_ms dt_forcePolytope = mc_rtc::duration_ms::zero();
+  mc_rtc::duration_ms dt_intersection = mc_rtc::duration_ms::zero();
+  mc_rtc::duration_ms dt_contactTotal = mc_rtc::duration_ms::zero();
 };
 
 struct ContactPolytopeResult
@@ -69,6 +69,7 @@ struct ContactPolytopeResult
     }
   }
 
+  std::string contactName;
   // We keep the friction cones as polytope objects, but they are actually polyhedral cones and will not be bounded
   boost::shared_ptr<Polytope_Rn> frictionCone;
   // The bounded actuation polytopes
@@ -121,6 +122,11 @@ void checkAllHSInternal(const std::string & polyName, boost::shared_ptr<Polytope
 
 struct ContactPolytopeJob
 {
+  ~ContactPolytopeJob()
+  {
+    removeFromLogger();
+  }
+
   ContactPolytopeInput input;
   ContactTimers timers;
 
@@ -177,7 +183,7 @@ struct ContactPolytopeJob
     if(futurePolytope.valid())
     {
       lastResult_ = futurePolytope.get();
-      lastResult_.updateTrianglesGUIPolytopix(guiScale_, input.surfacePose);
+      lastResult_->updateTrianglesGUIPolytopix(guiScale_, input.surfacePose);
       running_ = false;
       return true;
     }
@@ -188,16 +194,40 @@ struct ContactPolytopeJob
    * Get the last result
    * One should check if we have a result using checkResult
    */
-  const ContactPolytopeResult & lastResult() const noexcept
+  const std::optional<ContactPolytopeResult> & lastResult() const noexcept
   {
     return lastResult_;
+  }
+
+  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
+  {
+    if(logger_) return;
+    logger_ = &logger;
+    auto contact = input.contactName;
+    logger.addLogEntry("perf_" + prefix + "_" + contact + "_frictionCone", this,
+                       [this]() { return timers.dt_frictionCone.count(); });
+    logger.addLogEntry("perf_" + prefix + "_" + contact + "_forcePolytope", this,
+                       [this]() { return timers.dt_forcePolytope.count(); });
+    logger.addLogEntry("perf_" + prefix + "_" + contact + "_intersection", this,
+                       [this, contact]() { return timers.dt_intersection.count(); });
+    logger.addLogEntry("perf_" + prefix + "_" + contact + "_Total", this,
+                       [this]() { return timers.dt_contactTotal.count(); });
+  }
+
+  void removeFromLogger()
+  {
+    if(logger_)
+    {
+      logger_->removeLogEntries(this);
+    }
   }
 
 protected: // bookeeping for the async job
   bool running_ = false;
   std::future<ContactPolytopeResult> futurePolytope;
-  ContactPolytopeResult lastResult_;
+  std::optional<ContactPolytopeResult> lastResult_;
   ContactPolytopeResult computePolytopeJob();
+  mc_rtc::Logger * logger_ = nullptr;
 
   // actual computation
 protected:
@@ -300,7 +330,7 @@ struct DynamicPolytope
   std::vector<std::string> guiCategory_ = {"DynamicPolytopes"};
 
   void addToGUI(mc_rtc::gui::StateBuilder * gui);
-  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes_");
+  void addToLogger(mc_rtc::Logger & logger);
   void removeFromLogger(mc_rtc::Logger & logger);
 
   // ------------------------------------------------------> public computation functions
@@ -356,10 +386,9 @@ struct DynamicPolytope
     if(feasiblePolytopesJobs_.count(contactName))
     {
       auto & job = feasiblePolytopesJobs_[contactName];
-      if(job.checkResult())
+      if(auto result = job.lastResult())
       {
-        auto & result = job.lastResult();
-        return result.frictionConesPlanes;
+        return result->frictionConesPlanes;
       }
     }
     mc_rtc::log::error_and_throw("Cannot get friction cone planes for contact {}", contactName);
@@ -371,10 +400,9 @@ struct DynamicPolytope
     if(feasiblePolytopesJobs_.count(contactName))
     {
       auto & job = feasiblePolytopesJobs_[contactName];
-      if(job.checkResult())
+      if(auto result = job.lastResult())
       {
-        auto & result = job.lastResult();
-        return result.forcePolyPlanes;
+        return result->forcePolyPlanes;
       }
     }
     mc_rtc::log::error_and_throw("Cannot get force poly planes for contact {}", contactName);
@@ -397,6 +425,7 @@ struct DynamicPolytope
 
 protected:
   void updateGUI();
+  void updateLogger();
 
   // Updates the internal maps of triangles of the contacts for gui display
   void updateTrianglesContactsGUIPolitopix();
@@ -525,45 +554,7 @@ protected:
     return dt_zeroMoment_intersection_;
   }
 
-  inline mc_rtc::duration_ms getContact_dt_frictionCone(const std::string & name) const noexcept
-  {
-    return contactsTimers_.at(name).dt_frictionCone;
-  }
-
-  inline mc_rtc::duration_ms getContact_dt_forcePolytope(const std::string & name) const noexcept
-  {
-    return contactsTimers_.at(name).dt_forcePolytope;
-  }
-
-  inline mc_rtc::duration_ms getContact_dt_intersection(const std::string & name) const noexcept
-  {
-    return contactsTimers_.at(name).dt_intersection;
-  }
-
-  inline mc_rtc::duration_ms getContact_dt_Total(const std::string & name) const noexcept
-  {
-    return contactsTimers_.at(name).dt_contactTotal;
-  }
-
   // ------------------------------------------------------> GUI getters
-
-  std::vector<std::array<Eigen::Vector3d, 3>> getFrictionConesTriangles(const std::string & name)
-  {
-    std::lock_guard<std::mutex> lock(getContactMutex(frictionConeTrianglesMutexes_, name));
-    return frictionConesTrianglesMap_.at(name);
-  };
-
-  std::vector<std::array<Eigen::Vector3d, 3>> getForcePolyTriangles(const std::string & name)
-  {
-    std::lock_guard<std::mutex> lock(getContactMutex(forcePolyTrianglesMutexes_, name));
-    return forcePolyTrianglesMap_.at(name);
-  };
-
-  std::vector<std::array<Eigen::Vector3d, 3>> getContactMomentTriangles(const std::string & name)
-  {
-    std::lock_guard<std::mutex> lock(getContactMutex(momentTrianglesMutexes_, name));
-    return momentPolytopesTrianglesMap_.at(name);
-  };
 
   std::vector<std::array<Eigen::Vector3d, 3>> getCWCForceTriangles()
   {
@@ -614,6 +605,7 @@ protected:
   std::string name_;
   const mc_rbdyn::Robot & robot_;
   mc_rtc::gui::StateBuilder * gui_ = nullptr;
+  mc_rtc::Logger * logger_ = nullptr;
   mc_rtc::Configuration config_;
   std::set<std::string> possibleContacts_;
   std::set<std::string> activeContacts_;
@@ -659,30 +651,17 @@ protected:
   // condition variable to signal start of loop for main thread
   std::condition_variable cv_;
   std::mutex contactSetMutex_;
-  std::map<std::string, std::mutex> frictionConesMutexes_;
-  std::map<std::string, std::mutex> forcePolyMutexes_;
   std::thread zmpThread_;
   std::thread minkSumThread_;
   std::atomic<bool> VRPRegionComputed_{true};
   std::mutex VRPPlanesMutex_;
   std::mutex zeroMomentPlanesMutex_;
-  std::map<std::string, std::mutex> frictionConesPlanesMutexes_;
-  std::map<std::string, std::mutex> forcePolyPlanesMutexes_;
 
   std::mutex CWCMutex_;
   std::mutex ZMPMutex_;
   std::mutex zeroMomentMutex_;
 
-  // this is a workaround for the fact that mutexes are not movable
-  // using this function to get the desired mutex from the name they will be created when needed
-  std::mutex & getContactMutex(std::map<std::string, std::mutex> & mutexMap, const std::string & contactName)
-  {
-    return mutexMap[contactName]; // constructs it inside the map if doesn't exist
-  }
   // gui mutexes
-  std::map<std::string, std::mutex> frictionConeTrianglesMutexes_;
-  std::map<std::string, std::mutex> forcePolyTrianglesMutexes_;
-  std::map<std::string, std::mutex> momentTrianglesMutexes_;
   std::mutex CWCForceTrianglesMutex_;
   std::mutex CWCMomentTrianglesMutex_;
   std::mutex ZMPTrianglesMutex_;
@@ -701,7 +680,6 @@ protected:
   mc_rtc::duration_ms dt_compute_guiTrianglesContacts_;
   mc_rtc::duration_ms dt_compute_guiTrianglesRegions_ = mc_rtc::duration_ms::zero();
   mc_rtc::duration_ms dt_zeroMoment_intersection_;
-  std::map<std::string, ContactTimers> contactsTimers_;
 
   // map of polytope triangles for display
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> frictionConesTrianglesMap_;

@@ -26,13 +26,6 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 
     refContactTransforms_.emplace(contact, sva::PTransformd::Identity());
 
-    ContactTimers newTimers;
-    newTimers.dt_contactTotal = mc_rtc::duration_ms::zero();
-    newTimers.dt_forcePolytope = mc_rtc::duration_ms::zero();
-    newTimers.dt_frictionCone = mc_rtc::duration_ms::zero();
-    newTimers.dt_intersection = mc_rtc::duration_ms::zero();
-    contactsTimers_.emplace(contact, newTimers);
-
     forceScalingFactors_.emplace(contact, defaultForceScale);
     frictionCoefficients_.emplace(contact, defaultFrictionCoeff);
     numbersOfFrictionSides_.emplace(contact, defaultFrictionSides);
@@ -69,9 +62,8 @@ DynamicPolytope::~DynamicPolytope()
 // Update contact in ctl
 void DynamicPolytope::computeRegions()
 {
+  auto start_loop = mc_rtc::clock::now();
   withMoments_ ? Rn::setDimension(6) : Rn::setDimension(3);
-
-  // auto start_loop = mc_rtc::clock::now();
 
   // Get the set of active contacts and contacts to remove
   setCurrentContacts();
@@ -89,6 +81,7 @@ void DynamicPolytope::computeRegions()
     if(!job.running())
     {
       auto & input = job.input;
+      input.contactName = contactName;
       input.mb = robot.mb();
       input.mbc = robot.mbc();
       input.tl = robot.tl();
@@ -113,7 +106,7 @@ void DynamicPolytope::computeRegions()
     auto & job = feasiblePolytopesJobs_[contactName];
     if(job.checkResult())
     {
-      auto result = job.lastResult();
+      auto result = *job.lastResult();
       updateRBDynPolytopes(result.forcePolyPlanes.first, result.forcePolyPlanes.second, contactsRBDyn_.at(contactName));
     }
   }
@@ -133,13 +126,14 @@ void DynamicPolytope::computeRegions()
     }
   }
 
-  // dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
+  dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
 
   // Update contacts GUI
-  // updateTrianglesContactsGUIPolitopix();
   if(contactsUpdated_)
   {
+    mc_rtc::log::info("[{}] Contacts updated, updating GUI", name_);
     updateGUI();
+    updateLogger();
     contactsUpdated_ = false;
   }
 
@@ -158,8 +152,8 @@ void DynamicPolytope::computeRegions()
   //   }
   // }
 
-  // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updating
-  // dt_loop_total_ = mc_rtc::clock::now() - start_loop;
+  // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updati
+  dt_loop_total_ = mc_rtc::clock::now() - start_loop;
 }
 
 void DynamicPolytope::buildFrictionConeFromContactWithVrep(int numberOfFrictionSides,
@@ -1347,11 +1341,15 @@ void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
 }
 
 // TODO: restore log
-void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
+void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
 {
-  // logger.addLogEntry("perf_" + prefix + name_ + "_totalLoop", this, [this]() { return dt_loop_total().count(); });
-  // logger.addLogEntry("perf_" + prefix + name_ + "_computeContactSet", this,
-  //                    [this]() { return dt_contactSet().count(); });
+  auto prefix = name_;
+  logger_ = &logger;
+  logger.addLogEntry("perf_" + prefix + "_totalLoop", this, [this]() { return dt_loop_total().count(); });
+  logger.addLogEntry("perf_" + prefix + "_computeContactSet", this, [this]() { return dt_contactSet().count(); });
+
+  updateLogger();
+
   // logger.addLogEntry("perf_" + prefix + name_ + "_minkSum", this, [this]() { return dt_minkSum().count(); });
   // logger.addLogEntry("perf_" + prefix + name_ + "_updatePlanes", this, [this]() { return dt_updatePlanes().count();
   // }); logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesContacts", this,
@@ -1371,6 +1369,18 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & p
   //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_Total", this,
   //                      [this, contact]() { return getContact_dt_Total(contact).count(); });
   // }
+}
+
+void DynamicPolytope::updateLogger()
+{
+  for(auto & [_, job] : feasiblePolytopesJobs_)
+  {
+    const auto & result = job.lastResult();
+    if(result)
+    {
+      job.addToLogger(*logger_, name_);
+    }
+  }
 }
 
 void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * gui)
@@ -1441,7 +1451,10 @@ void DynamicPolytope::updateGUI()
   for(const auto & contact : activeContacts_)
   {
     const auto & job = feasiblePolytopesJobs_.at(contact);
-    const auto & result = job.lastResult();
+    const auto & resultOpt = job.lastResult();
+    if(!resultOpt) continue;
+    const auto & result = *resultOpt;
+
     gui.addElement(this, coeffsCat,
                    mc_rtc::gui::NumberSlider(
                        fmt::format(contact + " force alpha [0.001-1]"),
@@ -1466,21 +1479,15 @@ void DynamicPolytope::updateGUI()
                                            [&result]() { return result.momentPolytopesTriangles; }));
   }
 
-  // coeffsCat.push_back("Coefficients");
-  // auto contactsCat = category;
-  // contactsCat.push_back("Contact Polytopes");
-  // auto CWCCat = category;
-  // CWCCat.push_back("Contact Wrench Cone");
-  //
-  // gui.addElement(
-  //     this, category,
-  //     mc_rtc::gui::Checkbox(
-  //         "Compute explicit regions", [this]() { return computeRegions_; },
-  //         [this]() { computeRegions_ = !computeRegions_; }),
-  //     mc_rtc::gui::Checkbox(
-  //         "Compute force poly from Hrep", [this]() { return HrepMode_; }, [this]() { HrepMode_ = !HrepMode_; }),
-  //     mc_rtc::gui::Checkbox(
-  //         "Compute moments", [this]() { return withMoments_; }, [this]() { withMoments_ = !withMoments_; }));
+  gui.addElement(
+      this, category,
+      mc_rtc::gui::Checkbox(
+          "Compute explicit regions", [this]() { return computeRegions_; },
+          [this]() { computeRegions_ = !computeRegions_; }),
+      mc_rtc::gui::Checkbox(
+          "Compute force poly from Hrep", [this]() { return HrepMode_; }, [this]() { HrepMode_ = !HrepMode_; }),
+      mc_rtc::gui::Checkbox(
+          "Compute moments", [this]() { return withMoments_; }, [this]() { withMoments_ = !withMoments_; }));
   //
   // // Debug options for the GUI
   // gui.addElement(
@@ -1494,10 +1501,6 @@ void DynamicPolytope::updateGUI()
   //     mc_rtc::gui::Checkbox(
   //         "With eCMP-VRP offset", [this]() { return withVRPOffset_; }, [this]() { withVRPOffset_ = !withVRPOffset_;
   //         }));
-  //
-  // for(const auto & contact : possibleContacts_)
-  // {
-  // }
   //
   // gui.addElement(
   //     this, CWCCat,
