@@ -63,6 +63,8 @@ target_link_libraries(DynamicPolytope
   Qhull::qhull_r
 )
 
+add_subdirectory(tests)
+
 #### Exporting targets and installing ####
 
 install(

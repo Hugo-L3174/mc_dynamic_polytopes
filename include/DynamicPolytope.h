@@ -3,16 +3,20 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <mutex>
+#include <politopix/Voronoi_Rn.h>
 #include <thread>
 
 #include <RBDyn/Coriolis.h>
+#include <SpaceVecAlg/SpaceVecAlg>
 
 #include <mc_control/fsm/Controller.h>
 #include <mc_rtc/clock.h>
 #include <mc_rtc/gui.h>
+#include <mc_rtc/logging.h>
+#include <Tasks/QPContacts.h>
 
-#include "GUIComputations.h"
 #include "WrenchCones.h"
 
 #include <politopix/PolyhedralAlgorithms_Rn.h>
@@ -22,6 +26,9 @@
 #include <libqhull_r/qhull_ra.h>
 
 using HRepXd = std::pair<Eigen::MatrixXd, Eigen::VectorXd>;
+constexpr double defaultForceScale = 1;
+constexpr int defaultFrictionSides = 5;
+constexpr double defaultFrictionCoeff = 0.5;
 
 struct ContactTimers
 {
@@ -29,6 +36,154 @@ struct ContactTimers
   mc_rtc::duration_ms dt_forcePolytope;
   mc_rtc::duration_ms dt_intersection;
   mc_rtc::duration_ms dt_contactTotal;
+};
+
+struct ContactPolytopeResult
+{
+  ContactPolytopeResult()
+  : frictionCone(new Polytope_Rn()), actuationPolytope(new Polytope_Rn()), frictionConeMoments(new Polytope_Rn())
+  {
+    // XXX: what's the point of this initialization
+    // Here initialize planes as simple friction cones to have a sane constraint at first iteration
+    // The rotX_r1_r2 matrix would be the identity in a default case
+    HRepXd newPlanes;
+    newPlanes.first =
+        generatePolyhedralConeHRep(defaultFrictionSides, Eigen::Matrix3d::Identity(), defaultFrictionCoeff);
+    newPlanes.second = Eigen::VectorXd::Zero(newPlanes.first.rows());
+    frictionConesPlanes = newPlanes;
+    forcePolyPlanes = newPlanes;
+  }
+
+  // We keep the friction cones as polytope objects, but they are actually polyhedral cones and will not be bounded
+  boost::shared_ptr<Polytope_Rn> frictionCone;
+  // The bounded actuation polytopes
+  boost::shared_ptr<Polytope_Rn> actuationPolytope;
+  boost::shared_ptr<Polytope_Rn> frictionConeMoments;
+
+  HRepXd frictionConesPlanes;
+  HRepXd forcePolyPlanes;
+};
+
+struct ContactPolytopeInput
+{
+  rbd::MultiBody mb;
+  rbd::MultiBodyConfig mbc;
+  std::shared_ptr<mc_rbdyn::Surface> surface;
+  sva::MotionVecd accW;
+  std::vector<std::vector<double>> tl, tu;
+
+  // TODO: sane defaults
+  std::string contactName;
+  sva::PTransformd refContactTransform;
+  int numberOfFrictionSides;
+  double forceScalingFactors;
+  double frictionCoefficients;
+};
+
+// Computes the convex hull of the set of points given (Qhull format) and builds the halfspaces in the given polytope
+void computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope, int dim);
+
+// compute the contact friction cone into an unbounded polyhedral cone (only planes in a polytope object)
+void buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
+                                          const sva::PTransformd X_r1_r2,
+                                          boost::shared_ptr<Polytope_Rn> & frictionCone,
+                                          double m_frictionCoef,
+                                          unsigned int dim);
+// Puts the H representation of the given polytope into a matrix (normals) and a vector (offsets) for easy
+// testing/constraining. /!\ politopix convention has normals towards the inside, so we negate them again to return
+// them in usual convention (normals towards exterior)
+// TODO template this for polyhedral cones
+void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
+                                  Eigen::MatrixXd & Normals,
+                                  Eigen::VectorXd & Offsets);
+
+void checkAllHSInternal(const std::string & polyName, boost::shared_ptr<Polytope_Rn> & polytope);
+
+struct ContactPolytopeJob
+{
+  ContactPolytopeInput input;
+  ContactTimers timers;
+
+  // XXX: what to do about these options?
+  // Options for easier display of the computation steps
+  // TODO turn into a schema
+  bool combineWithFriction_ = true;
+  bool DDfrictionCones_ = false;
+  bool HrepMode_ = false;
+
+  /**
+   * Starts the async job defined in \ref computePolytopeJob()
+   * One must set the input before this
+   */
+  void startAsync()
+  {
+    running_ = true;
+    futurePolytope = std::async(std::bind(&ContactPolytopeJob::computePolytopeJob, this));
+    // #ifndef WIN32
+    //     // Lower thread priority so that it has a lesser priority than the real time thread
+    //     auto th_handle = feasiblePolytopesThreads_.at(contactName).native_handle();
+    //     int policy = 0;
+    //     sched_param param{};
+    //     pthread_getschedparam(th_handle, &policy, &param);
+    //     param.sched_priority = 10;
+    //     if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
+    //     {
+    //       // XXX Check if warning exists on real time kernel
+    //       // mc_rtc::log::warning(
+    //       //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this
+    //       might "
+    //       //     "cause latency to the real-time loop.",
+    //       //     name_, contactName);
+    //     }
+    // #endif
+  }
+
+  /**
+   * Checks whether the async task has been started
+   */
+  bool running() const noexcept
+  {
+    return running_;
+  }
+
+  /**
+   * Checks whether the job has completed and stores it to lastResult_
+   *
+   * \returns true when the result has been computed, false otherwise
+   */
+  bool checkResult()
+  {
+    if(futurePolytope.valid())
+    {
+      lastResult_ = futurePolytope.get();
+      running_ = false;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get the last result
+   */
+  const ContactPolytopeResult & lastResult() const noexcept
+  {
+    return lastResult_;
+  }
+
+protected: // bookeeping for the async job
+  bool running_ = false;
+  std::future<ContactPolytopeResult> futurePolytope;
+  ContactPolytopeResult lastResult_;
+  ContactPolytopeResult computePolytopeJob();
+
+  // actual computation
+protected:
+  // compute the force polytope of the contact from the wrench limits of the limb actuating it
+  // now also taking a scale factor (0-1) for force
+  void buildActuationPolytopeFromContact(const ContactPolytopeInput & input,
+                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
+                                         double forceScalingFactor,
+                                         unsigned int dim);
 };
 
 struct DynamicPolytope
@@ -42,7 +197,6 @@ struct DynamicPolytope
   inline void stopThread()
   {
     computing_ = false;
-    mainComputeThread_.join();
     if(zmpThread_.joinable())
     {
       zmpThread_.join();
@@ -50,10 +204,6 @@ struct DynamicPolytope
     if(minkSumThread_.joinable())
     {
       minkSumThread_.join();
-    }
-    for(auto & thread : feasiblePolytopesThreads_)
-    {
-      thread.second.join();
     }
   }
 
@@ -138,14 +288,6 @@ struct DynamicPolytope
 
   // ------------------------------------------------------> public computation functions
 
-  // compute the contact friction cone into an unbounded polyhedral cone (only planes in a polytope object)
-  void buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
-                                            const sva::PTransformd X_r1_r2,
-                                            boost::shared_ptr<Polytope_Rn> & frictionCone,
-                                            std::mutex & frictionConeMutex,
-                                            double m_frictionCoef,
-                                            int dim);
-
   // compute the contact friction cone into a bounded polytope from the Vrep, with planes formed from the bounding
   // volume computation
   void buildFrictionConeFromContactWithVrep(int numberOfFrictionSides,
@@ -164,27 +306,14 @@ struct DynamicPolytope
                                   double maxForce,
                                   Eigen::Vector3d CoM);
 
-  // compute the force polytope of the contact from the wrench limits of the limb actuating it
-  // now also taking a scale factor (0-1) for force
-  void buildActuationPolytopeFromContact(const std::string contactName,
-                                         const mc_rbdyn::Robot & robot,
-                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                         std::mutex & forcePolyMutex,
-                                         double forceScalingFactor,
-                                         int dim);
-
   // compute friction cone and force polytope, then intersect both into the friction cone object
-  void buildFeasiblePolytopeFromContact(const std::string contactName,
-                                        const mc_rbdyn::Robot & robot,
-                                        const sva::PTransformd refContactPose,
-                                        int numberOfFrictionSides,
-                                        double forceScalingFactor,
-                                        double m_frictionCoef,
-                                        boost::shared_ptr<Polytope_Rn> & frictionCone,
-                                        std::mutex & frictionConeMutex,
-                                        boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                        std::mutex & forcePolyMutex,
-                                        ContactTimers & timers);
+  ContactPolytopeResult buildFeasiblePolytopeFromContact(const std::string contactName,
+                                                         const ContactPolytopeInput input,
+                                                         const sva::PTransformd refContactPose,
+                                                         int numberOfFrictionSides,
+                                                         double forceScalingFactor,
+                                                         double m_frictionCoef,
+                                                         ContactTimers & timers);
 
   // ------------------------------------------------------> Plane constraints getters
 
@@ -207,15 +336,31 @@ struct DynamicPolytope
   // Prefer using the force polytope planes if they are computed
   const HRepXd & getFrictionConePlanes(const std::string & contactName)
   {
-    std::lock_guard<std::mutex> lock(getContactMutex(frictionConesPlanesMutexes_, contactName));
-    return frictionConesPlanes_.at(contactName);
+    if(feasiblePolytopesJobs_.count(contactName))
+    {
+      auto & job = feasiblePolytopesJobs_[contactName];
+      if(job.checkResult())
+      {
+        auto & result = job.lastResult();
+        return result.frictionConesPlanes;
+      }
+    }
+    mc_rtc::log::error_and_throw("Cannot get friction cone planes for contact {}", contactName);
   };
 
   // Returns the desired contact force polytope H representation
   const HRepXd & getForcePolyPlanes(const std::string & contactName)
   {
-    std::lock_guard<std::mutex> lock(getContactMutex(forcePolyPlanesMutexes_, contactName));
-    return forcePolyPlanes_.at(contactName);
+    if(feasiblePolytopesJobs_.count(contactName))
+    {
+      auto & job = feasiblePolytopesJobs_[contactName];
+      if(job.checkResult())
+      {
+        auto & result = job.lastResult();
+        return result.forcePolyPlanes;
+      }
+    }
+    mc_rtc::log::error_and_throw("Cannot get force poly planes for contact {}", contactName);
   };
 
   const auto & robot() const noexcept
@@ -223,16 +368,17 @@ struct DynamicPolytope
     return robot_;
   }
 
-  // Projects the given point on the VRP region. Returns the given point if it is already inside
-  Eigen::Vector3d projectPointInVRPRegion(Eigen::Vector3d testedPoint);
-
-  Eigen::Vector3d projectPointInZeroMomentRegion(Eigen::Vector3d testedPoint);
-
-protected:
-  // main computation function that calls all region calculations in sequence
-  // intended to be called in a thread, and will thread region calculations correctly
+  /**
+   * XXX: MUST be called every iteration
+   */
   void computeRegions();
 
+  // Projects the given point on the VRP region. Returns the given point if it is already inside
+  // Eigen::Vector3d projectPointInVRPRegion(Eigen::Vector3d testedPoint);
+  //
+  // Eigen::Vector3d projectPointInZeroMomentRegion(Eigen::Vector3d testedPoint);
+
+protected:
   // Updates the internal maps of triangles of the contacts for gui display
   void updateTrianglesContactsGUIPolitopix();
 
@@ -295,14 +441,6 @@ protected:
   // Might be unnecessary, heavy algorithm to remove unnecessary faces
   void computeResultHull();
 
-  // Puts the H representation of the given polytope into a matrix (normals) and a vector (offsets) for easy
-  // testing/constraining. /!\ politopix convention has normals towards the inside, so we negate them again to return
-  // them in usual convention (normals towards exterior)
-  // TODO template this for polyhedral cones
-  void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
-                                    Eigen::MatrixXd & Normals,
-                                    Eigen::VectorXd & Offsets);
-
   // Updates the feasible polytope representation internal to rbdyn contacts
   void updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
                             const Eigen::VectorXd & Offsets,
@@ -311,10 +449,6 @@ protected:
   // From the current contact set, deduce what contacts need to be removed from computation compared to last iteration
   void setCurrentContacts()
   {
-    auto waitForLock = mc_rtc::clock::now();
-    std::lock_guard<std::mutex> lock(contactSetMutex_);
-    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
-    // mc_rtc::log::critical("Region compute thread waited {}ms to get contact lock", lockTime.count());
     // take the previous set of contacts
     contactsToRemove_ = activeContacts_;
     activeContacts_.clear();
@@ -325,17 +459,12 @@ protected:
       // every active contact does not need to be removed
       contactsToRemove_.erase(contact.first);
     }
-  };
+  }
 
-  // Computes the convex hull of the set of points given (Qhull format) and builds the halfspaces in the given polytope
-  void computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope, int dim);
-
-  Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
+  // Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
 
   // sanity check
   bool checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn> & polytope);
-
-  void checkAllHSInternal(const std::string & polyName, boost::shared_ptr<Polytope_Rn> & polytope);
 
   // ------------------------------------------------------> Timing functions
 
@@ -460,9 +589,9 @@ protected:
 
   // ------------------------------------------------------> Internal variables
 
-  mc_rtc::Configuration config_;
   std::string name_;
   const mc_rbdyn::Robot & robot_;
+  mc_rtc::Configuration config_;
   std::set<std::string> possibleContacts_;
   std::set<std::string> activeContacts_;
   std::set<std::string> contactsToRemove_;
@@ -485,18 +614,13 @@ protected:
   bool withMoments_;
   bool computeRegions_;
   bool HrepMode_;
-  // Options for easier display of the computation steps
-  bool combineWithFriction_ = true;
-  bool DDfrictionCones_ = false;
   bool withVRPOffset_ = true;
+  bool combineWithFriction_ = true;
 
   // politopix
 
-  // We keep the friction cones as polytope objects, but they are actually polyhedral cones and will not be bounded
-  std::map<std::string, boost::shared_ptr<Polytope_Rn>> frictionCones_;
-  // The bounded actuation polytopes
-  std::map<std::string, boost::shared_ptr<Polytope_Rn>> forcePolytopes_;
-  std::map<std::string, boost::shared_ptr<Polytope_Rn>> frictionConesMoments_;
+  std::map<std::string, ContactPolytopeJob>
+      feasiblePolytopesJobs_; /// For each contact store a job to compute its feasibility polytope asynchronously
 
   boost::shared_ptr<Polytope_Rn> CWCForces_;
   boost::shared_ptr<Polytope_Rn> CWCMoments_;
@@ -506,14 +630,11 @@ protected:
   boost::shared_ptr<Polytope_Rn> zeroMomentRegion_;
 
   // threading things
-  std::thread mainComputeThread_;
   // atomic bool as condition to keep computing in loop
   std::atomic<bool> computing_{false};
   // condition variable to signal start of loop for main thread
   std::condition_variable cv_;
   std::mutex contactSetMutex_;
-  std::map<std::string, std::thread> feasiblePolytopesThreads_;
-  std::mutex feasiblePolytopesThreadsMutex_;
   std::map<std::string, std::mutex> frictionConesMutexes_;
   std::map<std::string, std::mutex> forcePolyMutexes_;
   std::thread zmpThread_;
@@ -547,9 +668,6 @@ protected:
   HRepXd DCMVRPPlanes_;
 
   HRepXd zeroMomentPlanes_;
-
-  std::map<std::string, HRepXd> frictionConesPlanes_;
-  std::map<std::string, HRepXd> forcePolyPlanes_;
 
   // timers to measure computation times
   mc_rtc::duration_ms dt_loop_total_;

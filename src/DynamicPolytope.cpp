@@ -1,4 +1,5 @@
 #include "DynamicPolytope.h"
+#include "GUIComputations.h"
 
 DynamicPolytope::DynamicPolytope(const std::string & name,
                                  const mc_rbdyn::Robot & robot,
@@ -12,40 +13,17 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
   combineWithFriction_ = dynamicPolyConfig("withFriction", true);
 
   // Init dimension
-  int dim = withMoments_ ? 6 : 3;
+  unsigned int dim = withMoments_ ? 6 : 3;
   Rn::setDimension(dim);
   Rn::setTolerance(1.e-07);
 
-  double defaultForceScale = 1;
-  int defaultFrictionSides = 5;
-  double defaultFrictionCoeff = 0.5;
-
-  for(const auto contact : possibleContacts_)
+  for(const auto & contact : possibleContacts_)
   {
     // init triangles maps
     std::vector<std::array<Eigen::Vector3d, 3UL>> newTrianglesArray;
     frictionConesTrianglesMap_.emplace(contact, newTrianglesArray);
     forcePolyTrianglesMap_.emplace(contact, newTrianglesArray);
     momentPolytopesTrianglesMap_.emplace(contact, newTrianglesArray);
-
-    // init cones maps
-    boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
-    frictionCones_.emplace(contact, newCone);
-
-    boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
-    forcePolytopes_.emplace(contact, newPoly);
-
-    boost::shared_ptr<Polytope_Rn> newMomentCone(new Polytope_Rn());
-    frictionConesMoments_.emplace(contact, newMomentCone);
-
-    HRepXd newPlanes;
-    // Here initialize planes as simple friction cones to have a sane constraint at first iteration
-    // The rotX_r1_r2 matrix would be the identity in a default case
-    newPlanes.first =
-        generatePolyhedralConeHRep(defaultFrictionSides, Eigen::Matrix3d::Identity(), defaultFrictionCoeff);
-    newPlanes.second = Eigen::VectorXd::Zero(newPlanes.first.rows());
-    frictionConesPlanes_.emplace(contact, newPlanes);
-    forcePolyPlanes_.emplace(contact, newPlanes);
 
     refContactTransforms_.emplace(contact, sva::PTransformd::Identity());
 
@@ -67,24 +45,6 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
   // init zmp region and intersection with ecmp region
   zmpRegion_.reset(new Polytope_Rn());
   zeroMomentRegion_.reset(new Polytope_Rn());
-
-  // Start a computing thread that will run continuously with the internal robot and contacts updated in the controller,
-  // mutex protected
-  mainComputeThread_ = std::thread(&DynamicPolytope::computeRegions, this);
-#ifndef WIN32
-  // Lower thread priority so that it has a lesser priority than the real time thread
-  auto th_handle = mainComputeThread_.native_handle();
-  int policy = 0;
-  sched_param param{};
-  pthread_getschedparam(th_handle, &policy, &param);
-  param.sched_priority = 10;
-  if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
-  {
-    mc_rtc::log::warning("[{}] Failed to lower thread priority. If you are running on a real-time system, this might "
-                         "cause latency to the real-time loop.",
-                         name_);
-  }
-#endif
 }
 
 DynamicPolytope::~DynamicPolytope()
@@ -92,85 +52,109 @@ DynamicPolytope::~DynamicPolytope()
   stopThread();
 }
 
+// Check contacts from ctl
+//
+// Start async thread for each new contact
+//    For existing threads, check if computation is finished (boolean)
+//    lock inputstate
+//    copy inputstate
+//    unlock inputstate
+//
+//    work on copy of inputstate
+//    ... thread computes ...
+//    setcomputation finished flag
+//
+// Stop threads for removed contacts
+//
+// Get result from all threads
+// Update contact in ctl
 void DynamicPolytope::computeRegions()
 {
-  // This section allows to block main thread until cv_ signals that computation can start, then loops conditionally on
-  // the computing_ variable that will also be used for thread stopping.
-  std::mutex mutex;
-  std::unique_lock<std::mutex> lk(mutex);
-  cv_.wait(lk, [this]() -> bool { return computing_; });
+  withMoments_ ? Rn::setDimension(6) : Rn::setDimension(3);
 
-  while(computing_)
+  // auto start_loop = mc_rtc::clock::now();
+
+  // Get the set of active contacts and contacts to remove
+  setCurrentContacts();
+
+  auto & robot = robot_;
+  // Step 1.1: launch individual force polytopes and friction cones calculations in separate threads as they are
+  // independant, then their intersection
+  for(const auto & contactName : activeContacts_)
   {
-    withMoments_ ? Rn::setDimension(6) : Rn::setDimension(3);
+    // TODO: Build input for each contact
+    // and replace this call
+    auto & job = feasiblePolytopesJobs_[contactName];
+    job.HrepMode_ = HrepMode_; // XXX
 
-    auto start_loop = mc_rtc::clock::now();
-    // Lock contact set mutex, set active contacts to be used in internal loops then unlock mutex
-    setCurrentContacts();
-
-    // Step 1.1: launch individual force polytopes and friction cones calculations in separate threads as they are
-    // independant, then their intersection
-    computeFeasibleForcesFromContactSet(robot_);
-
-    // Step 1.2: launch ZMP region calculation at the same time, also independant
-    if(computeRegions_)
+    if(!job.running())
     {
-      if(!zmpThread_.joinable())
-      {
-        zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
-      }
+      auto & input = job.input;
+      input.mb = robot.mb();
+      input.mbc = robot.mbc();
+      input.tl = robot.tl();
+      input.tu = robot.tu();
+      input.surface = robot.surface(contactName).copy();
+      input.accW = robot.accW();
+      input.refContactTransform = refContactTransforms_.at(contactName),
+      input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName),
+      input.forceScalingFactors = forceScalingFactors_.at(contactName),
+      input.frictionCoefficients = frictionCoefficients_.at(contactName),
+
+      // Job starts as an async task, use job.checkResult() later to know whether it is finished and retrive its value
+          job.startAsync();
     }
-
-    // Step 2: wait for finished individual feasible regions
-    // Wait for finished threads and join them, then update their matrix constraints
-    for(const auto contactName : activeContacts_)
-    {
-      feasiblePolytopesThreadsMutex_.lock();
-      feasiblePolytopesThreads_.at(contactName).join();
-      feasiblePolytopesThreads_.erase(contactName);
-      feasiblePolytopesThreadsMutex_.unlock();
-
-      std::lock_guard<std::mutex> lockFriction(getContactMutex(frictionConesPlanesMutexes_, contactName));
-      updatePlanesMatrixConstraint(frictionCones_.at(contactName), frictionConesPlanes_.at(contactName).first,
-                                   frictionConesPlanes_.at(contactName).second);
-      std::lock_guard<std::mutex> lockFeasible(getContactMutex(forcePolyPlanesMutexes_, contactName));
-      updatePlanesMatrixConstraint(forcePolytopes_.at(contactName), forcePolyPlanes_.at(contactName).first,
-                                   forcePolyPlanes_.at(contactName).second);
-      std::lock_guard<std::mutex> lockContactSet(contactSetMutex_); // lock contact set for rbdyn contacts accessor
-      try // try block in case contact was destroyed in the controller
-      {
-        updateRBDynPolytopes(forcePolyPlanes_.at(contactName).first, forcePolyPlanes_.at(contactName).second,
-                             contactsRBDyn_.at(contactName));
-      }
-      catch(const std::exception & e)
-      {
-        mc_rtc::log::error("[{}] Update {} contact failed : {}", name_, contactName, e.what());
-      }
-    }
-
-    dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
-
-    // Update contacts GUI
-    updateTrianglesContactsGUIPolitopix();
-
-    // Steps 3-6: launch the rest everytime the previous full region was computed
-    if(computeRegions_)
-    {
-      if(VRPRegionComputed_)
-      {
-        if(minkSumThread_.joinable())
-        {
-          minkSumThread_.join();
-        }
-
-        VRPRegionComputed_ = false;
-        minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
-      }
-    }
-
-    // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updating
-    dt_loop_total_ = mc_rtc::clock::now() - start_loop;
   }
+
+  // Step 2: wait for finished individual feasible regions
+  // Wait for finished threads and join them, then update their matrix constraints
+  for(const auto & contactName : activeContacts_)
+  {
+    auto & job = feasiblePolytopesJobs_[contactName];
+    if(job.checkResult())
+    {
+      auto result = job.lastResult();
+      updateRBDynPolytopes(result.forcePolyPlanes.first, result.forcePolyPlanes.second, contactsRBDyn_.at(contactName));
+    }
+  }
+
+  // Remove contacts
+  for(const auto & removeContact : contactsToRemove_)
+  {
+    feasiblePolytopesJobs_.erase(removeContact);
+  }
+
+  // Step 1.2: launch ZMP region calculation at the same time, also independant
+  if(computeRegions_)
+  {
+    if(!zmpThread_.joinable())
+    {
+      zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+    }
+  }
+
+  // dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
+
+  // Update contacts GUI
+  updateTrianglesContactsGUIPolitopix();
+
+  // Steps 3-6: launch the rest everytime the previous full region was computed
+  // if(computeRegions_) // TODO: restore implementation
+  // {
+  //   if(VRPRegionComputed_)
+  //   {
+  //     if(minkSumThread_.joinable())
+  //     {
+  //       minkSumThread_.join();
+  //     }
+  //
+  //     VRPRegionComputed_ = false;
+  //     minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
+  //   }
+  // }
+
+  // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updating
+  // dt_loop_total_ = mc_rtc::clock::now() - start_loop;
 }
 
 void DynamicPolytope::buildFrictionConeFromContactWithVrep(int numberOfFrictionSides,
@@ -180,14 +164,14 @@ void DynamicPolytope::buildFrictionConeFromContactWithVrep(int numberOfFrictionS
                                                            double m_frictionCoef,
                                                            double maxForce)
 {
-  int dim = 3;
+  unsigned int dim = 3;
   boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
   // for now generate cone generates only the directions for the rays: we assume it is a polyhedral cone
   auto generators =
       generatePolyhedralConeGens(numberOfFrictionSides, contactSurface.rotation(), m_frictionCoef, maxForce);
   // here we manipulate polytope objects so need to add origin as a generator on the polyhedral cone
   generators.emplace_back(Eigen::Vector3d::Zero());
-  for(const auto g : generators)
+  for(const auto & g : generators)
   {
     boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
     boost::numeric::ublas::vector<double> coords(3);
@@ -209,12 +193,11 @@ void DynamicPolytope::buildFrictionConeFromContactWithVrep(int numberOfFrictionS
   //                   forceCone->numberOfGenerators());
 }
 
-void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
-                                                           const sva::PTransformd X_r1_r2,
-                                                           boost::shared_ptr<Polytope_Rn> & frictionCone,
-                                                           std::mutex & frictionConeMutex,
-                                                           double m_frictionCoef,
-                                                           int dim)
+void buildFrictionConeFromContactWithHrep(int numberOfFrictionSides,
+                                          const sva::PTransformd X_r1_r2,
+                                          boost::shared_ptr<Polytope_Rn> & frictionCone,
+                                          double m_frictionCoef,
+                                          unsigned int dim)
 {
   boost::shared_ptr<Polytope_Rn> newCone(new Polytope_Rn());
 
@@ -260,11 +243,13 @@ void DynamicPolytope::buildFrictionConeFromContactWithHrep(int numberOfFrictionS
   // mc_rtc::log::info("Computed friction cone with {} hs and {} gens", newCone->numberOfHalfSpaces(),
   //                   newCone->numberOfGenerators());
   // lock cone mutex, then reset cone pointer to newly computed cone
-  std::lock_guard<std::mutex> lock(frictionConeMutex);
+
+  // XXX:(arnaud) do we need to reset the pointer
   frictionCone.reset();
   frictionCone = newCone;
 }
 
+// public
 void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
                                                  std::pair<std::pair<double, double>, sva::PTransformd> contactSurface,
                                                  boost::shared_ptr<Polytope_Rn> & forceCone,
@@ -332,56 +317,56 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
   momentPoly = newMomentPoly;
 }
 
-void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contactName,
-                                                        const mc_rbdyn::Robot & robot,
-                                                        boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                                        std::mutex & forcePolyMutex,
-                                                        double forceScalingFactor,
-                                                        int dim)
+void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytopeInput & input,
+                                                           boost::shared_ptr<Polytope_Rn> & actuationPolytope,
+                                                           double forceScalingFactor,
+                                                           unsigned int dim)
 {
   boost::shared_ptr<Polytope_Rn> newPoly(new Polytope_Rn());
 
   const int n_var = 6;
   // Removing underactuated dofs
-  const int jacSize = robot.mb().nrDof() - 6;
+  const int jacSize = input.mb.nrDof() - 6;
 
   // Computing dynamics terms of the equation of motion
-  rbd::ForwardDynamics forwardDyn(robot.mb());
+  rbd::ForwardDynamics forwardDyn(input.mb);
   // Inertia
-  forwardDyn.computeH(robot.mb(), robot.mbc());
+  forwardDyn.computeH(input.mb, input.mbc);
   Eigen::MatrixXd inertiaMat = forwardDyn.H();
 
   // Coriolis
   // XXX should the coriolis matrix be used or the C vector of the forward dynamics?
-  rbd::Coriolis coriolis(robot.mb());
-  Eigen::MatrixXd coriolisMat = coriolis.coriolis(robot.mb(), robot.mbc());
+  rbd::Coriolis coriolis(input.mb);
+  Eigen::MatrixXd coriolisMat = coriolis.coriolis(input.mb, input.mbc);
 
   // XXX this version contains gravity and external forces, to check
-  forwardDyn.computeC(robot.mb(), robot.mbc());
+  forwardDyn.computeC(input.mb, input.mbc);
   Eigen::VectorXd coriolisVec = forwardDyn.C();
 
   // Correct jacobian building needs names because we need to link the surface to a body and compute the jac of the body
   // + transform between surface and the body
-  const mc_rbdyn::Surface & surface = robot.surface(contactName);
+  const mc_rbdyn::Surface & surface = *input.surface;
   std::string bodyName = surface.bodyName();
-  sva::PTransformd X_s_b = robot.bodyPosW(bodyName) * (robot.surfacePose(contactName).inv());
+  const auto X_s_b = surface.X_b_s().inv();
+
+  // auto X_s_b = robot.bodyPosW(input.surface->bodyName()) * (robot.surfacePose(contactName).inv());
 
   // XXX check if need transformation between body and frame OR between 0 and frame !
   // XXX here I used the bodyJacobian to be already in the body frame but is this correct?
   // Building jacobian to the contact frame
-  rbd::Jacobian jac(robot.mb(), bodyName, X_s_b.inv().translation());
+  rbd::Jacobian jac(input.mb, bodyName, X_s_b.inv().translation());
 
   // Dense jacobian
-  Eigen::MatrixXd denseJac = jac.bodyJacobian(robot.mb(), robot.mbc());
-  Eigen::MatrixXd denseJacDot = jac.bodyJacobianDot(robot.mb(), robot.mbc());
+  Eigen::MatrixXd denseJac = jac.bodyJacobian(input.mb, input.mbc);
+  Eigen::MatrixXd denseJacDot = jac.bodyJacobianDot(input.mb, input.mbc);
   // mc_rtc::log::info("Dense Jacobian: \n{}", denseJac);
   // mc_rtc::log::info("Dense Jacobian {} is of dimensions {}", contactName, denseJac.rows(), denseJac.cols());
 
   // Allocate then fill sparse jacobian
-  Eigen::MatrixXd globalFullJac = Eigen::MatrixXd::Zero(6, robot.mb().nrDof());
-  jac.fullJacobian(robot.mb(), denseJac, globalFullJac);
-  Eigen::MatrixXd globalFullJacDot = Eigen::MatrixXd::Zero(6, robot.mb().nrDof());
-  jac.fullJacobian(robot.mb(), denseJacDot, globalFullJacDot);
+  Eigen::MatrixXd globalFullJac = Eigen::MatrixXd::Zero(6, input.mb.nrDof());
+  jac.fullJacobian(input.mb, denseJac, globalFullJac);
+  Eigen::MatrixXd globalFullJacDot = Eigen::MatrixXd::Zero(6, input.mb.nrDof());
+  jac.fullJacobian(input.mb, denseJacDot, globalFullJacDot);
   // mc_rtc::log::info("Sparse Jacobian: \n{}", globalFullJac);
 
   // rotate to contact frame
@@ -393,20 +378,20 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
   // mc_rtc::log::info("Sparse jacobian transposed and rotated to surface frame: \n{}", contactFullJacT);
 
   // Torque limits vectors
-  Eigen::VectorXd upperTorqueLims = rbd::dofToVector(robot.mb(), robot.tu());
-  Eigen::VectorXd lowerTorqueLims = rbd::dofToVector(robot.mb(), robot.tl());
-  Eigen::VectorXd upperTorqueLimsNoFloatingBase = rbd::dofToVector(robot.mb(), robot.tu()).segment(6, jacSize);
-  Eigen::VectorXd lowerTorqueLimsNoFloatingBase = rbd::dofToVector(robot.mb(), robot.tl()).segment(6, jacSize);
+  Eigen::VectorXd upperTorqueLims = rbd::dofToVector(input.mb, input.tu);
+  Eigen::VectorXd lowerTorqueLims = rbd::dofToVector(input.mb, input.tl);
+  Eigen::VectorXd upperTorqueLimsNoFloatingBase = rbd::dofToVector(input.mb, input.tu).segment(6, jacSize);
+  Eigen::VectorXd lowerTorqueLimsNoFloatingBase = rbd::dofToVector(input.mb, input.tl).segment(6, jacSize);
 
   // Joint vectors
-  const Eigen::VectorXd qdot = rbd::dofToVector(robot.mb(), robot.mbc().alpha);
-  const Eigen::VectorXd qddot = rbd::dofToVector(robot.mb(), robot.mbc().alphaD);
+  const Eigen::VectorXd qdot = rbd::dofToVector(input.mb, input.mbc.alpha);
+  const Eigen::VectorXd qddot = rbd::dofToVector(input.mb, input.mbc.alphaD);
 
   // XXX tentative selection vector for contact by using the contact jacobian
-  Eigen::VectorXd actuatorSelectionVector = Eigen::VectorXd::Zero(robot.mb().nrDof());
+  Eigen::VectorXd actuatorSelectionVector = Eigen::VectorXd::Zero(input.mb.nrDof());
   int numberOfActuatorsPlaying = 0;
 
-  for(int i = 0; i < robot.mb().nrDof(); i++)
+  for(int i = 0; i < input.mb.nrDof(); i++)
   {
     if(!contactFullJac.col(i).isZero())
     {
@@ -432,7 +417,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 
     // Inertia floating base * floating base acc + Inertia without coupling terms * qdotdot + (coriolis+ g(q))
 
-    Eigen::VectorXd delta = inertiaMat.bottomRows(jacSize).leftCols(6) * robot.accW().vector()
+    Eigen::VectorXd delta = inertiaMat.bottomRows(jacSize).leftCols(6) * input.accW.vector()
                             + inertiaMat.bottomRows(jacSize).rightCols(jacSize) * qddot.segment(6, jacSize)
                             + coriolisVec.bottomRows(jacSize);
     // mc_rtc::log::info("delta {} is\n{}", contactName, delta);
@@ -480,7 +465,7 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
     }
     auto start_DD = mc_rtc::clock::now();
     // Compute double description from half spaces (not generators -> truncation with bounding box)
-    auto result = politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 5000);
+    politopixAPI::computeDoubleDescriptionWithoutCheck(newPoly, 5000);
     // mc_rtc::log::info("DD force poly for {} finished with {} gens and {} hs", contactName,
     //                   newPoly->numberOfGenerators(), newPoly->numberOfHalfSpaces());
     mc_rtc::duration_ms end_DD = mc_rtc::clock::now() - start_DD;
@@ -630,12 +615,13 @@ void DynamicPolytope::buildActuationPolytopeFromContact(const std::string contac
 
   // mc_rtc::log::info("Force polytope of {} is ok? {}", contactName, checkGravityCenterInPolytope(newPoly));
   // lock poly mutex, then reset poly pointer to newly computed poly
-  std::lock_guard<std::mutex> lock(forcePolyMutex);
+
+  // XXX: do we need to reset the pointer?
   actuationPolytope.reset();
   actuationPolytope = newPoly;
 }
 
-void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope, int dim)
+void computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_Rn> & polytope, int dim)
 {
   // Memory management vars
   int curlong, totlong;
@@ -693,35 +679,38 @@ void DynamicPolytope::computeQhullHrep(std::vector<double> & points, boost::shar
   }
 }
 
-void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
-                                                       const mc_rbdyn::Robot & robot,
-                                                       const sva::PTransformd X_r1_r2,
-                                                       int numberOfFrictionSides,
-                                                       double forceScalingFactor,
-                                                       double frictionCoeff,
-                                                       boost::shared_ptr<Polytope_Rn> & frictionCone,
-                                                       std::mutex & frictionConeMutex,
-                                                       boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                                       std::mutex & forcePolyMutex,
-                                                       ContactTimers & timers)
+// ContactPolytopeResult DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
+//       const ContactPolytopeInput input,
+//                                                        const sva::PTransformd X_r1_r2,
+//                                                        int numberOfFrictionSides,
+//                                                        double forceScalingFactor,
+//                                                        double frictionCoeff,
+//                                                        ContactTimers & timers)
+ContactPolytopeResult ContactPolytopeJob::computePolytopeJob()
 {
+  ContactPolytopeResult result;
+  auto & frictionCone = result.frictionCone;
+  auto & actuationPolytope = result.actuationPolytope;
+  const auto & contactName = input.contactName;
+  const auto forceScalingFactor = input.forceScalingFactors;
+  const auto numberOfFrictionSides = input.numberOfFrictionSides;
+  const auto X_r1_r2 = input.refContactTransform; // XXX: double check
+  const auto frictionCoeff = input.frictionCoefficients;
+
   // sva::PTransformd contactPose = robot.surfacePose(contactName);
-  int dim = Rn::getDimension() == 3 ? 3 : 6;
+  unsigned int dim = Rn::getDimension() == 3 ? 3 : 6;
   auto start_forcePoly = mc_rtc::clock::now();
 
   // update the correct force polytope in the map
-  buildActuationPolytopeFromContact(contactName, robot, actuationPolytope, forcePolyMutex, forceScalingFactor, dim);
+  buildActuationPolytopeFromContact(input, actuationPolytope, forceScalingFactor, dim);
   timers.dt_forcePolytope = mc_rtc::clock::now() - start_forcePoly;
 
   auto start_frictionCone = mc_rtc::clock::now();
-  buildFrictionConeFromContactWithHrep(numberOfFrictionSides, X_r1_r2, frictionCone, frictionConeMutex, frictionCoeff,
-                                       dim);
+  buildFrictionConeFromContactWithHrep(numberOfFrictionSides, X_r1_r2, frictionCone, frictionCoeff, dim);
   timers.dt_frictionCone = mc_rtc::clock::now() - start_frictionCone;
 
   auto start_intersection = mc_rtc::clock::now();
   // Compute intersection
-  std::lock_guard<mutex> lockFriction(frictionConeMutex);
-  std::lock_guard<mutex> lockForce(forcePolyMutex);
 
   // intersect friction cone planes with force polytope into friction cone object
   // Two possible ways: either we don't run the DD on the force poly at first, just compute force planes, compute
@@ -769,176 +758,154 @@ void DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contact
   //                   forcePolytopes_.at(contactName)->numberOfGenerators());
   timers.dt_intersection = mc_rtc::clock::now() - start_intersection;
   timers.dt_contactTotal = mc_rtc::clock::now() - start_forcePoly;
+
+  updatePlanesMatrixConstraint(result.frictionCone, result.frictionConesPlanes.first,
+                               result.frictionConesPlanes.second);
+  updatePlanesMatrixConstraint(result.actuationPolytope, result.forcePolyPlanes.first, result.forcePolyPlanes.second);
+
+  return result;
 }
 
+// FIXME: restore implementation
 void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot & robot)
 {
-  auto frictionCoeff = 0.7;
-  auto nbFrictionSides = 5;
-  auto maxForce = 250.;
-  auto CoM = robot.com();
-
-  for(const auto contactName : activeContacts_)
-  {
-    // dummy value: should need difference between controlled surface and the target in the contact pair
-    sva::PTransformd X_r1_r2 = sva::PTransformd::Identity();
-    if(!withMoments_)
-    {
-      buildFrictionConeFromContactWithHrep(nbFrictionSides, X_r1_r2, frictionCones_.at(contactName),
-                                           getContactMutex(frictionConesMutexes_, contactName), frictionCoeff, 3);
-    }
-    else
-    {
-      // find limits of contact area for moment limits
-      double newContactHalfLength;
-      double newContactHalfWidth;
-      findHalfWidthLength(robot.surface(contactName), newContactHalfWidth, newContactHalfLength);
-      std::pair<std::pair<double, double>, sva::PTransformd> newContact(
-          std::pair<double, double>(newContactHalfLength, newContactHalfWidth), robot.surfacePose(contactName));
-
-      // TODO thread moments versions as well: add moment mutex + put mutexes as arguments
-      buildWrenchConeFromContact(nbFrictionSides, newContact, frictionCones_.at(contactName),
-                                 frictionConesMoments_.at(contactName), frictionCoeff, maxForce, CoM);
-    }
-  }
+  // auto frictionCoeff = 0.7;
+  // auto nbFrictionSides = 5;
+  // auto maxForce = 250.;
+  // auto CoM = robot.com();
+  //
+  // for(const auto & contactName : activeContacts_)
+  // {
+  //   // dummy value: should need difference between controlled surface and the target in the contact pair
+  //   sva::PTransformd X_r1_r2 = sva::PTransformd::Identity();
+  //   auto & lastContactPolytope = lastContactPolytopes_.at(contactName);
+  //   if(!withMoments_)
+  //   {
+  //     buildFrictionConeFromContactWithHrep(nbFrictionSides, X_r1_r2, lastContactPolytope.frictionCone, frictionCoeff,
+  //     3);
+  //   }
+  //   else
+  //   {
+  //     // find limits of contact area for moment limits
+  //     double newContactHalfLength;
+  //     double newContactHalfWidth;
+  //     findHalfWidthLength(robot.surface(contactName), newContactHalfWidth, newContactHalfLength);
+  //     std::pair<std::pair<double, double>, sva::PTransformd> newContact(
+  //         std::pair<double, double>(newContactHalfLength, newContactHalfWidth), robot.surfacePose(contactName));
+  //
+  //     // TODO thread moments versions as well: add moment mutex + put mutexes as arguments
+  //     buildWrenchConeFromContact(nbFrictionSides, newContact, lastContactPolytope.frictionCone,
+  //         lastContactPolytope.frictionConeMoments, frictionCoeff, maxForce, CoM);
+  //   }
+  // }
 }
 
+//  TODO: restore implementation
 void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & robot)
 {
-  double forceScalingFactor = 1;
-  for(const auto contactName : activeContacts_)
-  {
-    buildActuationPolytopeFromContact(contactName, robot, forcePolytopes_.at(contactName),
-                                      getContactMutex(forcePolyMutexes_, contactName), forceScalingFactor, 3);
-  }
+  // double forceScalingFactor = 1;
+  // for(const auto & contactName : activeContacts_)
+  // {
+  //   auto & lastContactPolytope = lastContactPolytopes_.at(contactName);
+  //   buildActuationPolytopeFromContact(contactName, robot,
+  //       lastContactPolytope.actuationPolytope, forceScalingFactor, 3);
+  // }
 }
 
-void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot)
-{
-  std::lock_guard<std::mutex> lock(contactSetMutex_);
-  for(const auto & contactName : activeContacts_)
-  {
-    // launching contact computation
-    std::lock_guard<std::mutex> lockThreadMap(feasiblePolytopesThreadsMutex_);
-    feasiblePolytopesThreads_.emplace(
-        contactName,
-        std::thread(
-            &DynamicPolytope::buildFeasiblePolytopeFromContact, this, contactName, std::ref(robot),
-            refContactTransforms_.at(contactName), std::ref(numbersOfFrictionSides_.at(contactName)),
-            std::ref(forceScalingFactors_.at(contactName)), std::ref(frictionCoefficients_.at(contactName)),
-            std::ref(frictionCones_.at(contactName)), std::ref(getContactMutex(frictionConesMutexes_, contactName)),
-            std::ref(forcePolytopes_.at(contactName)), std::ref(getContactMutex(forcePolyMutexes_, contactName)),
-            std::ref(contactsTimers_.at(contactName))));
-#ifndef WIN32
-    // Lower thread priority so that it has a lesser priority than the real time thread
-    auto th_handle = feasiblePolytopesThreads_.at(contactName).native_handle();
-    int policy = 0;
-    sched_param param{};
-    pthread_getschedparam(th_handle, &policy, &param);
-    param.sched_priority = 10;
-    if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
-    {
-      // XXX Check if warning exists on real time kernel
-      // mc_rtc::log::warning(
-      //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this might "
-      //     "cause latency to the real-time loop.",
-      //     name_, contactName);
-    }
-#endif
-  }
-}
+void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot) {}
 
+// TODO: restore implementation
 void DynamicPolytope::computeMinkowskySumPolitopix()
 {
-  auto start_minkSum = mc_rtc::clock::now();
-  boost::shared_ptr<Polytope_Rn> newForcePoly(new Polytope_Rn());
-  boost::shared_ptr<Polytope_Rn> newMomentPoly(new Polytope_Rn());
-
-  // putting it in vector form for library function
-  std::vector<boost::shared_ptr<Polytope_Rn>> polytopesForces;
-  std::vector<boost::shared_ptr<Polytope_Rn>> polytopesMoments;
-
-  // protecting set of contact names
-  contactSetMutex_.lock();
-  // mc_rtc::log::info("Starting to add polytopes for mink sum");
-  for(const auto & active : activeContacts_)
-  {
-    boost::shared_ptr<Polytope_Rn> newContactPoly(new Polytope_Rn());
-    // The friction + force intersection was overwritten in the force polytopes
-    // Locking polytope mutex
-    // Copying the contact polytopes to use for mink computation
-    getContactMutex(forcePolyMutexes_, active).lock();
-    politopixAPI::copyPolytope(forcePolytopes_.at(active), newContactPoly);
-    // mc_rtc::log::info("Adding poly with {} gens and {} hs", newContactPoly->numberOfGenerators(),
-    //                   newContactPoly->numberOfHalfSpaces());
-    getContactMutex(forcePolyMutexes_, active).unlock();
-
-    // After copying the contact frame polytope, rotate it to world frame before minkowski sum
-    // Vectors are force in contact frame so X_contact_f
-    // We want X_0_f = X_contact_f * X_0_contact
-    auto X_0_contact = robot_.surfacePose(active);
-    X_0_contact.translation() = Eigen::Vector3d::Zero();
-
-    // Rotating generators
-    constIteratorOfListOfGeometricObjects<boost::shared_ptr<Generator_Rn>> iterGen(
-        newContactPoly->getListOfGenerators());
-    for(iterGen.begin(); iterGen.end() != true; iterGen.next())
-    {
-      Eigen::Vector3d vect(iterGen.current()->getCoordinate(0), iterGen.current()->getCoordinate(1),
-                           iterGen.current()->getCoordinate(2));
-      vect = (sva::PTransformd(vect) * X_0_contact).translation();
-      iterGen.current()->setCoordinate(0, vect.x());
-      iterGen.current()->setCoordinate(1, vect.y());
-      iterGen.current()->setCoordinate(2, vect.z());
-    }
-    // Rotating halfspaces normals
-    constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> iterHS(
-        newContactPoly->getListOfHalfSpaces());
-    for(iterHS.begin(); iterHS.end() != true; iterHS.next())
-    {
-      Eigen::Vector3d normal(iterHS.current()->getCoefficient(0), iterHS.current()->getCoefficient(1),
-                             iterHS.current()->getCoefficient(2));
-      normal = (sva::PTransformd(normal) * X_0_contact).translation();
-      iterHS.current()->setCoefficient(0, normal.x());
-      iterHS.current()->setCoefficient(1, normal.y());
-      iterHS.current()->setCoefficient(2, normal.z());
-    }
-
-    polytopesForces.emplace_back(newContactPoly);
-    if(withMoments_)
-    {
-      polytopesMoments.emplace_back(frictionConesMoments_.at(active));
-    }
-  }
-  contactSetMutex_.unlock();
-
-  try
-  {
-    if(!polytopesForces.empty())
-    {
-      MinkowskiSum Mink(polytopesForces, newForcePoly);
-    }
-    std::lock_guard<std::mutex> lock(CWCMutex_);
-    CWCForces_.reset();
-    CWCForces_ = newForcePoly;
-  }
-  catch(const std::exception & e)
-  {
-    mc_rtc::log::error("[{}] Minkowski sum error: {}", name_, e.what());
-  }
-
-  // mc_rtc::log::info("CWCForces_ has {} generators and {} facets", CWCForces_->numberOfGenerators(),
-  // CWCForces_->numberOfHalfSpaces());
-  if(withMoments_)
-  {
-    MinkowskiSum Mink(polytopesMoments, newMomentPoly);
-    // mc_rtc::log::info("CWCMoments_ has {} generators and {} facets", CWCMoments_->numberOfGenerators(),
-    // CWCMoments_->numberOfHalfSpaces());
-    CWCMoments_.reset();
-    CWCMoments_ = newMomentPoly;
-  }
-
-  dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
+  // auto start_minkSum = mc_rtc::clock::now();
+  // boost::shared_ptr<Polytope_Rn> newForcePoly(new Polytope_Rn());
+  // boost::shared_ptr<Polytope_Rn> newMomentPoly(new Polytope_Rn());
+  //
+  // // putting it in vector form for library function
+  // std::vector<boost::shared_ptr<Polytope_Rn>> polytopesForces;
+  // std::vector<boost::shared_ptr<Polytope_Rn>> polytopesMoments;
+  //
+  // // protecting set of contact names
+  // contactSetMutex_.lock();
+  // // mc_rtc::log::info("Starting to add polytopes for mink sum");
+  // for(const auto & active : activeContacts_)
+  // {
+  //   boost::shared_ptr<Polytope_Rn> newContactPoly(new Polytope_Rn());
+  //   // The friction + force intersection was overwritten in the force polytopes
+  //   // Locking polytope mutex
+  //   // Copying the contact polytopes to use for mink computation
+  //   getContactMutex(forcePolyMutexes_, active).lock();
+  //   politopixAPI::copyPolytope(forcePolytopes_.at(active), newContactPoly);
+  //   // mc_rtc::log::info("Adding poly with {} gens and {} hs", newContactPoly->numberOfGenerators(),
+  //   //                   newContactPoly->numberOfHalfSpaces());
+  //   getContactMutex(forcePolyMutexes_, active).unlock();
+  //
+  //   // After copying the contact frame polytope, rotate it to world frame before minkowski sum
+  //   // Vectors are force in contact frame so X_contact_f
+  //   // We want X_0_f = X_contact_f * X_0_contact
+  //   auto X_0_contact = robot_.surfacePose(active);
+  //   X_0_contact.translation() = Eigen::Vector3d::Zero();
+  //
+  //   // Rotating generators
+  //   constIteratorOfListOfGeometricObjects<boost::shared_ptr<Generator_Rn>> iterGen(
+  //       newContactPoly->getListOfGenerators());
+  //   for(iterGen.begin(); iterGen.end() != true; iterGen.next())
+  //   {
+  //     Eigen::Vector3d vect(iterGen.current()->getCoordinate(0), iterGen.current()->getCoordinate(1),
+  //                          iterGen.current()->getCoordinate(2));
+  //     vect = (sva::PTransformd(vect) * X_0_contact).translation();
+  //     iterGen.current()->setCoordinate(0, vect.x());
+  //     iterGen.current()->setCoordinate(1, vect.y());
+  //     iterGen.current()->setCoordinate(2, vect.z());
+  //   }
+  //   // Rotating halfspaces normals
+  //   constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> iterHS(
+  //       newContactPoly->getListOfHalfSpaces());
+  //   for(iterHS.begin(); iterHS.end() != true; iterHS.next())
+  //   {
+  //     Eigen::Vector3d normal(iterHS.current()->getCoefficient(0), iterHS.current()->getCoefficient(1),
+  //                            iterHS.current()->getCoefficient(2));
+  //     normal = (sva::PTransformd(normal) * X_0_contact).translation();
+  //     iterHS.current()->setCoefficient(0, normal.x());
+  //     iterHS.current()->setCoefficient(1, normal.y());
+  //     iterHS.current()->setCoefficient(2, normal.z());
+  //   }
+  //
+  //   polytopesForces.emplace_back(newContactPoly);
+  //   if(withMoments_)
+  //   {
+  //     polytopesMoments.emplace_back(frictionConesMoments_.at(active));
+  //   }
+  // }
+  // contactSetMutex_.unlock();
+  //
+  // try
+  // {
+  //   if(!polytopesForces.empty())
+  //   {
+  //     MinkowskiSum Mink(polytopesForces, newForcePoly);
+  //   }
+  //   std::lock_guard<std::mutex> lock(CWCMutex_);
+  //   CWCForces_.reset();
+  //   CWCForces_ = newForcePoly;
+  // }
+  // catch(const std::exception & e)
+  // {
+  //   mc_rtc::log::error("[{}] Minkowski sum error: {}", name_, e.what());
+  // }
+  //
+  // // mc_rtc::log::info("CWCForces_ has {} generators and {} facets", CWCForces_->numberOfGenerators(),
+  // // CWCForces_->numberOfHalfSpaces());
+  // if(withMoments_)
+  // {
+  //   MinkowskiSum Mink(polytopesMoments, newMomentPoly);
+  //   // mc_rtc::log::info("CWCMoments_ has {} generators and {} facets", CWCMoments_->numberOfGenerators(),
+  //   // CWCMoments_->numberOfHalfSpaces());
+  //   CWCMoments_.reset();
+  //   CWCMoments_ = newMomentPoly;
+  // }
+  //
+  // dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
 }
 
 void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)
@@ -952,7 +919,7 @@ void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rb
   // First we scale with the POSITIVE scale because scaling only modifies the HS offsets, not their normals so the
   // polytope would be inverted but the planes inside out
   double scale = comPosition.z() / (robot.mass() * 9.81);
-  bool ok = TopGeomTools::scalingFactor(CWCForces_, scale);
+  TopGeomTools::scalingFactor(CWCForces_, scale);
   // Then we negate the polytope to mirror the generators and the normals correctly
   CWCForces_->negate();
 
@@ -1054,55 +1021,56 @@ void DynamicPolytope::computeZeroMomentIntersection()
   dt_zeroMoment_intersection_ = mc_rtc::clock::now() - start_zeroMomentIntersection;
 }
 
+// TODO: restore implementation
 void DynamicPolytope::computeVRPRegionWithMinkSum()
 {
-  // Step 3: All feasible regions computed, start minkowsky sum computation
-  computeMinkowskySumPolitopix();
-
-  // Step 4: wait for finished mink sum to convert to eCMP region (no thread needed)
-  computeECMPRegion(robot_.com(), robot_);
-
-  // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
-  if(zmpThread_.joinable())
-  {
-    zmpThread_.join();
-  }
-  computeZeroMomentIntersection();
-
-  // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
-  if(withVRPOffset_)
-  {
-    VRPtranslation(robot_.com().z());
-  }
-
-  // Update VRP planes internal variables to be fetched by controller
-  auto start_updatePlanes = mc_rtc::clock::now();
-  VRPPlanesMutex_.lock();
-  CWCMutex_.lock();
-  updatePlanesMatrixConstraint(CWCForces_, DCMVRPPlanes_.first, DCMVRPPlanes_.second);
-  CWCMutex_.unlock();
-  VRPPlanesMutex_.unlock();
-
-  // Update zero moment region planes to be fetched by controller
-  zeroMomentPlanesMutex_.lock();
-  zeroMomentMutex_.lock();
-  updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentPlanes_.first, zeroMomentPlanes_.second);
-  zeroMomentMutex_.unlock();
-  zeroMomentPlanesMutex_.unlock();
-  dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
-
-  // Update GUI display of regions
-  updateTrianglesRegionsGUIPolitopix();
-  VRPRegionComputed_ = true;
+  // // Step 3: All feasible regions computed, start minkowsky sum computation
+  // computeMinkowskySumPolitopix();
+  //
+  // // Step 4: wait for finished mink sum to convert to eCMP region (no thread needed)
+  // computeECMPRegion(robot_.com(), robot_);
+  //
+  // // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
+  // if(zmpThread_.joinable())
+  // {
+  //   zmpThread_.join();
+  // }
+  // computeZeroMomentIntersection();
+  //
+  // // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
+  // if(withVRPOffset_)
+  // {
+  //   VRPtranslation(robot_.com().z());
+  // }
+  //
+  // // Update VRP planes internal variables to be fetched by controller
+  // auto start_updatePlanes = mc_rtc::clock::now();
+  // VRPPlanesMutex_.lock();
+  // CWCMutex_.lock();
+  // updatePlanesMatrixConstraint(CWCForces_, DCMVRPPlanes_.first, DCMVRPPlanes_.second);
+  // CWCMutex_.unlock();
+  // VRPPlanesMutex_.unlock();
+  //
+  // // Update zero moment region planes to be fetched by controller
+  // zeroMomentPlanesMutex_.lock();
+  // zeroMomentMutex_.lock();
+  // updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentPlanes_.first, zeroMomentPlanes_.second);
+  // zeroMomentMutex_.unlock();
+  // zeroMomentPlanesMutex_.unlock();
+  // dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
+  //
+  // // Update GUI display of regions
+  // updateTrianglesRegionsGUIPolitopix();
+  // VRPRegionComputed_ = true;
 }
 
-void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)
+void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d /* comPosition */, const mc_rbdyn::Robot & robot)
 {
   // We scale the moment polytope according to the expression of the difference between eCMP and ZMP:
   // eCMP = ZMP + 1/(m*(g+\ddot(c)_z)) * (tau_y, - tau_x, 0.)
   // scale moment polytope by 1/(m*(g+\ddot(c)_z))
   double scale = 1 / (robot.mass() * (9.81 + robot.comAcceleration().z()));
-  bool ok = TopGeomTools::scalingFactor(CWCMoments_, scale);
+  TopGeomTools::scalingFactor(CWCMoments_, scale);
 
   // TODO change coords from varignon (check) + check that corresponds to inside of eCMP region?
 }
@@ -1151,37 +1119,38 @@ void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d comPosition, const mc
 //   return
 // }
 
+// TODO: restore implementation
 bool DynamicPolytope::checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn> & polytope)
 {
-  boost::numeric::ublas::vector<double> gravCenter(3);
-  TopGeomTools::gravityCenter(polytope, gravCenter);
-  Point_Rn testPoint(gravCenter(0), gravCenter(1), gravCenter(2));
-
-  int resultPolito = polytope->checkPoint(testPoint);
-  bool retResultPolitopix = false;
-  if(resultPolito == 1)
-  {
-    retResultPolitopix = true;
-  }
-
-  Eigen::MatrixXd Normals;
-  Eigen::VectorXd Offsets;
-  updatePlanesMatrixConstraint(polytope, Normals, Offsets);
-  Eigen::Vector3d testEigen(gravCenter(0), gravCenter(1), gravCenter(2));
-  Eigen::VectorXd test = Normals * testEigen - Offsets;
-  bool retResultEigen = true;
-  for(int coeff = 0; coeff < test.size(); coeff++)
-  {
-    if(test(coeff) > 0.0)
-    {
-      retResultEigen = false;
-    }
-  }
-
-  return retResultPolitopix && retResultEigen;
+  //   boost::numeric::ublas::vector<double> gravCenter(3);
+  //   TopGeomTools::gravityCenter(polytope, gravCenter);
+  //   Point_Rn testPoint(gravCenter(0), gravCenter(1), gravCenter(2));
+  //
+  //   int resultPolito = polytope->checkPoint(testPoint);
+  //   bool retResultPolitopix = false;
+  //   if(resultPolito == 1)
+  //   {
+  //     retResultPolitopix = true;
+  //   }
+  //
+  //   Eigen::MatrixXd Normals;
+  //   Eigen::VectorXd Offsets;
+  //   updatePlanesMatrixConstraint(polytope, Normals, Offsets);
+  //   Eigen::Vector3d testEigen(gravCenter(0), gravCenter(1), gravCenter(2));
+  //   Eigen::VectorXd test = Normals * testEigen - Offsets;
+  //   bool retResultEigen = true;
+  //   for(int coeff = 0; coeff < test.size(); coeff++)
+  //   {
+  //     if(test(coeff) > 0.0)
+  //     {
+  //       retResultEigen = false;
+  //     }
+  //   }
+  //
+  //   return retResultPolitopix && retResultEigen;
 }
 
-void DynamicPolytope::checkAllHSInternal(const std::string & polyName, boost::shared_ptr<Polytope_Rn> & polytope)
+void checkAllHSInternal(const std::string & polyName, boost::shared_ptr<Polytope_Rn> & polytope)
 {
   // Checking if there are internal halfspaces
   constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> HSiter(polytope->getListOfHalfSpaces());
@@ -1202,63 +1171,65 @@ void DynamicPolytope::checkAllHSInternal(const std::string & polyName, boost::sh
   }
 }
 
+// FIXME: should be done per-contact
+// TODO: restore GUI computation
 void DynamicPolytope::updateTrianglesContactsGUIPolitopix()
 {
-  auto start_guiTriangles = mc_rtc::clock::now();
-  // Protecting set of names (threaded) then copying
-  contactSetMutex_.lock();
-  auto activeContactSet = activeContacts_;
-  auto contactsToBeRemoved = contactsToRemove_;
-  contactSetMutex_.unlock();
-
-  int dim = Rn::getDimension() == 6 ? 6 : 3;
-
-  for(const auto & contact : activeContactSet)
-  {
-    auto contactPose = robot_.surfacePose(contact);
-
-    if(forcePolytopes_.at(contact)->dimension() == 3)
-    {
-      getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
-      getContactMutex(frictionConesMutexes_, contact).lock();
-      update3DPolyTrianglesPolitopix(frictionCones_.at(contact), frictionConesTrianglesMap_.at(contact), guiScale_,
-                                     contactPose);
-      getContactMutex(frictionConesMutexes_, contact).unlock();
-      getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
-
-      getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
-      getContactMutex(forcePolyMutexes_, contact).lock();
-      update3DPolyTrianglesPolitopix(forcePolytopes_.at(contact), forcePolyTrianglesMap_.at(contact), guiScale_,
-                                     contactPose);
-      getContactMutex(forcePolyMutexes_, contact).unlock();
-      getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
-    }
-    else
-    {
-      getContactMutex(momentTrianglesMutexes_, contact).lock();
-      getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
-      update6DPolyTrianglesPolitopix(forcePolytopes_.at(contact), momentPolytopesTrianglesMap_.at(contact),
-                                     forcePolyTrianglesMap_.at(contact), guiScale_, contactPose);
-      getContactMutex(momentTrianglesMutexes_, contact).unlock();
-      getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
-    }
-  }
-  for(const auto & contact : contactsToBeRemoved)
-  {
-    getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
-    frictionConesTrianglesMap_.at(contact).clear();
-    getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
-    if(dim == 6)
-    {
-      getContactMutex(momentTrianglesMutexes_, contact).lock();
-      momentPolytopesTrianglesMap_.at(contact).clear();
-      getContactMutex(momentTrianglesMutexes_, contact).unlock();
-    }
-    getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
-    forcePolyTrianglesMap_.at(contact).clear();
-    getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
-  }
-  dt_compute_guiTrianglesContacts_ = mc_rtc::clock::now() - start_guiTriangles;
+  // auto start_guiTriangles = mc_rtc::clock::now();
+  // // Protecting set of names (threaded) then copying
+  // contactSetMutex_.lock();
+  // auto activeContactSet = activeContacts_;
+  // auto contactsToBeRemoved = contactsToRemove_;
+  // contactSetMutex_.unlock();
+  //
+  // int dim = Rn::getDimension() == 6 ? 6 : 3;
+  //
+  // for(const auto & contact : activeContactSet)
+  // {
+  //   auto contactPose = robot_.surfacePose(contact);
+  //
+  //   if(forcePolytopes_.at(contact)->dimension() == 3)
+  //   {
+  //     getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
+  //     getContactMutex(frictionConesMutexes_, contact).lock();
+  //     update3DPolyTrianglesPolitopix(frictionCones_.at(contact), frictionConesTrianglesMap_.at(contact), guiScale_,
+  //                                    contactPose);
+  //     getContactMutex(frictionConesMutexes_, contact).unlock();
+  //     getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
+  //
+  //     getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
+  //     getContactMutex(forcePolyMutexes_, contact).lock();
+  //     update3DPolyTrianglesPolitopix(forcePolytopes_.at(contact), forcePolyTrianglesMap_.at(contact), guiScale_,
+  //                                    contactPose);
+  //     getContactMutex(forcePolyMutexes_, contact).unlock();
+  //     getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
+  //   }
+  //   else
+  //   {
+  //     getContactMutex(momentTrianglesMutexes_, contact).lock();
+  //     getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
+  //     update6DPolyTrianglesPolitopix(forcePolytopes_.at(contact), momentPolytopesTrianglesMap_.at(contact),
+  //                                    forcePolyTrianglesMap_.at(contact), guiScale_, contactPose);
+  //     getContactMutex(momentTrianglesMutexes_, contact).unlock();
+  //     getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
+  //   }
+  // }
+  // for(const auto & contact : contactsToBeRemoved)
+  // {
+  //   getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
+  //   frictionConesTrianglesMap_.at(contact).clear();
+  //   getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
+  //   if(dim == 6)
+  //   {
+  //     getContactMutex(momentTrianglesMutexes_, contact).lock();
+  //     momentPolytopesTrianglesMap_.at(contact).clear();
+  //     getContactMutex(momentTrianglesMutexes_, contact).unlock();
+  //   }
+  //   getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
+  //   forcePolyTrianglesMap_.at(contact).clear();
+  //   getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
+  // }
+  // dt_compute_guiTrianglesContacts_ = mc_rtc::clock::now() - start_guiTriangles;
 }
 
 void DynamicPolytope::updateTrianglesRegionsGUIPolitopix()
@@ -1322,9 +1293,9 @@ void DynamicPolytope::updateTrianglesRegionsGUIPolitopix()
   dt_compute_guiTrianglesRegions_ = mc_rtc::clock::now() - start_guiTriangles;
 }
 
-void DynamicPolytope::updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
-                                                   Eigen::MatrixXd & Normals,
-                                                   Eigen::VectorXd & Offsets)
+void updatePlanesMatrixConstraint(const boost::shared_ptr<Polytope_Rn> & polytope,
+                                  Eigen::MatrixXd & Normals,
+                                  Eigen::VectorXd & Offsets)
 {
   int nbOfPlanes = polytope->numberOfHalfSpaces();
   int dim;
@@ -1370,140 +1341,143 @@ void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
   }
 }
 
+// TODO: restore log
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
 {
-  logger.addLogEntry("perf_" + prefix + name_ + "_totalLoop", this, [this]() { return dt_loop_total().count(); });
-  logger.addLogEntry("perf_" + prefix + name_ + "_computeContactSet", this,
-                     [this]() { return dt_contactSet().count(); });
-  logger.addLogEntry("perf_" + prefix + name_ + "_minkSum", this, [this]() { return dt_minkSum().count(); });
-  logger.addLogEntry("perf_" + prefix + name_ + "_updatePlanes", this, [this]() { return dt_updatePlanes().count(); });
-  logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesContacts", this,
-                     [this]() { return dt_guiTrianglesContacts().count(); });
-  logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesRegions", this,
-                     [this]() { return dt_guiTrianglesRegions().count(); });
-  logger.addLogEntry("perf_" + prefix + name_ + "_zeroMomentIntersection", this,
-                     [this]() { return dt_zeroMomentInter().count(); });
-  for(const auto & contact : possibleContacts_)
-  {
-    logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_frictionCone", this,
-                       [this, contact]() { return getContact_dt_frictionCone(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_forcePolytope", this,
-                       [this, contact]() { return getContact_dt_forcePolytope(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_intersection", this,
-                       [this, contact]() { return getContact_dt_intersection(contact).count(); });
-    logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_Total", this,
-                       [this, contact]() { return getContact_dt_Total(contact).count(); });
-  }
+  // logger.addLogEntry("perf_" + prefix + name_ + "_totalLoop", this, [this]() { return dt_loop_total().count(); });
+  // logger.addLogEntry("perf_" + prefix + name_ + "_computeContactSet", this,
+  //                    [this]() { return dt_contactSet().count(); });
+  // logger.addLogEntry("perf_" + prefix + name_ + "_minkSum", this, [this]() { return dt_minkSum().count(); });
+  // logger.addLogEntry("perf_" + prefix + name_ + "_updatePlanes", this, [this]() { return dt_updatePlanes().count();
+  // }); logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesContacts", this,
+  //                    [this]() { return dt_guiTrianglesContacts().count(); });
+  // logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesRegions", this,
+  //                    [this]() { return dt_guiTrianglesRegions().count(); });
+  // logger.addLogEntry("perf_" + prefix + name_ + "_zeroMomentIntersection", this,
+  //                    [this]() { return dt_zeroMomentInter().count(); });
+  // for(const auto & contact : possibleContacts_)
+  // {
+  //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_frictionCone", this,
+  //                      [this, contact]() { return getContact_dt_frictionCone(contact).count(); });
+  //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_forcePolytope", this,
+  //                      [this, contact]() { return getContact_dt_forcePolytope(contact).count(); });
+  //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_intersection", this,
+  //                      [this, contact]() { return getContact_dt_intersection(contact).count(); });
+  //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_Total", this,
+  //                      [this, contact]() { return getContact_dt_Total(contact).count(); });
+  // }
 }
 
+// TODO: restore gui
 void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale, std::vector<std::string> category)
 {
-  config_("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
-  config_("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
-  config_("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
-  config_("gui")("polyhedronForce")("edges", polyForceConfig_.edge_config);
-  config_("gui")("polyhedronForce")("show_edges", polyForceConfig_.show_edges);
-  config_("gui")("polyhedronForce")("fixed_edge_color", polyForceConfig_.fixed_edge_color);
-  config_("gui")("polyhedronForce")("vertices")("color", polyForceConfig_.vertices_config.color);
-  config_("gui")("polyhedronForce")("vertices")("scale", polyForceConfig_.vertices_config.scale);
-  config_("gui")("polyhedronForce")("show_vertices", polyForceConfig_.show_vertices);
-  config_("gui")("polyhedronForce")("fixed_vertices_color", polyForceConfig_.fixed_vertices_color);
-
-  config_("gui")("polyhedronMoment")("triangle_color", polyMomentConfig_.triangle_color);
-  config_("gui")("polyhedronMoment")("show_triangle", polyMomentConfig_.show_triangle);
-  config_("gui")("polyhedronMoment")("use_triangle_color", polyMomentConfig_.use_triangle_color);
-  config_("gui")("polyhedronMoment")("edges", polyMomentConfig_.edge_config);
-  config_("gui")("polyhedronMoment")("show_edges", polyMomentConfig_.show_edges);
-  config_("gui")("polyhedronMoment")("fixed_edge_color", polyMomentConfig_.fixed_edge_color);
-  config_("gui")("polyhedronMoment")("vertices")("color", polyMomentConfig_.vertices_config.color);
-  config_("gui")("polyhedronMoment")("vertices")("scale", polyMomentConfig_.vertices_config.scale);
-  config_("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
-  config_("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
-
-  config_("gui")("polyhedronZMP")("triangle_color", polyZMPConfig_.triangle_color);
-  config_("gui")("polyhedronZMP")("show_triangle", polyZMPConfig_.show_triangle);
-  config_("gui")("polyhedronZMP")("use_triangle_color", polyZMPConfig_.use_triangle_color);
-  config_("gui")("polyhedronZMP")("edges", polyZMPConfig_.edge_config);
-  config_("gui")("polyhedronZMP")("show_edges", polyZMPConfig_.show_edges);
-  config_("gui")("polyhedronZMP")("fixed_edge_color", polyZMPConfig_.fixed_edge_color);
-  config_("gui")("polyhedronZMP")("vertices")("color", polyZMPConfig_.vertices_config.color);
-  config_("gui")("polyhedronZMP")("vertices")("scale", polyZMPConfig_.vertices_config.scale);
-  config_("gui")("polyhedronZMP")("show_vertices", polyZMPConfig_.show_vertices);
-  config_("gui")("polyhedronZMP")("fixed_vertices_color", polyZMPConfig_.fixed_vertices_color);
-
-  config_("gui")("polyhedronZeroMomentArea")("triangle_color", polyZeroMomentAreaConfig_.triangle_color);
-  config_("gui")("polyhedronZeroMomentArea")("show_triangle", polyZeroMomentAreaConfig_.show_triangle);
-  config_("gui")("polyhedronZeroMomentArea")("use_triangle_color", polyZeroMomentAreaConfig_.use_triangle_color);
-  config_("gui")("polyhedronZeroMomentArea")("edges", polyZeroMomentAreaConfig_.edge_config);
-  config_("gui")("polyhedronZeroMomentArea")("show_edges", polyZeroMomentAreaConfig_.show_edges);
-  config_("gui")("polyhedronZeroMomentArea")("fixed_edge_color", polyZeroMomentAreaConfig_.fixed_edge_color);
-  config_("gui")("polyhedronZeroMomentArea")("vertices")("color", polyZeroMomentAreaConfig_.vertices_config.color);
-  config_("gui")("polyhedronZeroMomentArea")("vertices")("scale", polyZeroMomentAreaConfig_.vertices_config.scale);
-  config_("gui")("polyhedronZeroMomentArea")("show_vertices", polyZeroMomentAreaConfig_.show_vertices);
-  config_("gui")("polyhedronZeroMomentArea")("fixed_vertices_color", polyZeroMomentAreaConfig_.fixed_vertices_color);
-
-  guiScale_ = guiScale;
-  category.push_back(name_);
-  auto coeffsCat = category;
-  coeffsCat.push_back("Coefficients");
-  auto contactsCat = category;
-  contactsCat.push_back("Contact Polytopes");
-  auto CWCCat = category;
-  CWCCat.push_back("Contact Wrench Cone");
-
-  gui.addElement(
-      this, category,
-      mc_rtc::gui::Checkbox(
-          "Compute explicit regions", [this]() { return computeRegions_; },
-          [this]() { computeRegions_ = !computeRegions_; }),
-      mc_rtc::gui::Checkbox(
-          "Compute force poly from Hrep", [this]() { return HrepMode_; }, [this]() { HrepMode_ = !HrepMode_; }),
-      mc_rtc::gui::Checkbox(
-          "Compute moments", [this]() { return withMoments_; }, [this]() { withMoments_ = !withMoments_; }));
-
-  // Debug options for the GUI
-  gui.addElement(
-      this, category,
-      mc_rtc::gui::Checkbox(
-          "Combine with frictions", [this]() { return combineWithFriction_; },
-          [this]() { combineWithFriction_ = !combineWithFriction_; }),
-      mc_rtc::gui::Checkbox(
-          "DD friction cones", [this]() { return DDfrictionCones_; },
-          [this]() { DDfrictionCones_ = !DDfrictionCones_; }),
-      mc_rtc::gui::Checkbox(
-          "With eCMP-VRP offset", [this]() { return withVRPOffset_; }, [this]() { withVRPOffset_ = !withVRPOffset_; }));
-
-  for(const auto contact : possibleContacts_)
-  {
-    gui.addElement(this, coeffsCat,
-                   mc_rtc::gui::NumberSlider(
-                       fmt::format(contact + " force alpha [0.001-1]"),
-                       [this, contact]() { return getForceScalingFactor(contact); },
-                       // scale min at 0.001 instead of 0 to avoid handling zero polytope
-                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.001, 1.0),
-                   mc_rtc::gui::NumberInput(
-                       fmt::format(contact + " friction coefficient"),
-                       [this, contact]() { return getFrictionCoeff(contact); },
-                       [this, contact](double frictionCoeff) { getFrictionCoeff(contact) = frictionCoeff; }),
-                   mc_rtc::gui::IntegerInput(
-                       fmt::format(contact + " number of friction sides"),
-                       [this, contact]() { return getNbOfFrictionSides(contact); },
-                       [this, contact](int nbFrictionSides) { getNbOfFrictionSides(contact) = nbFrictionSides; }));
-
-    gui.addElement(this, contactsCat,
-                   mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
-                                           [this, contact]() { return getFrictionConesTriangles(contact); }),
-                   mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
-                                           [this, contact]() { return getForcePolyTriangles(contact); })/*,
-                   mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
-                                           [this, contact]() { return getContactMomentTriangles(contact); })*/);
-  }
-
-  gui.addElement(
-      this, CWCCat,
-      mc_rtc::gui::Polyhedron("CWC forces", polyForceConfig_, [this]() { return getCWCForceTriangles(); }),
-      /*mc_rtc::gui::Polyhedron("CWC moments", polyMomentConfig_, [this]() { return getCWCMomentTriangles(); }),*/
-      mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [this]() { return getZMPTriangles(); }),
-      mc_rtc::gui::Polyhedron("Zero moment region", polyZeroMomentAreaConfig_,
-                              [this]() { return getZeroMomentTriangles(); }));
+  // config_("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
+  // config_("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
+  // config_("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
+  // config_("gui")("polyhedronForce")("edges", polyForceConfig_.edge_config);
+  // config_("gui")("polyhedronForce")("show_edges", polyForceConfig_.show_edges);
+  // config_("gui")("polyhedronForce")("fixed_edge_color", polyForceConfig_.fixed_edge_color);
+  // config_("gui")("polyhedronForce")("vertices")("color", polyForceConfig_.vertices_config.color);
+  // config_("gui")("polyhedronForce")("vertices")("scale", polyForceConfig_.vertices_config.scale);
+  // config_("gui")("polyhedronForce")("show_vertices", polyForceConfig_.show_vertices);
+  // config_("gui")("polyhedronForce")("fixed_vertices_color", polyForceConfig_.fixed_vertices_color);
+  //
+  // config_("gui")("polyhedronMoment")("triangle_color", polyMomentConfig_.triangle_color);
+  // config_("gui")("polyhedronMoment")("show_triangle", polyMomentConfig_.show_triangle);
+  // config_("gui")("polyhedronMoment")("use_triangle_color", polyMomentConfig_.use_triangle_color);
+  // config_("gui")("polyhedronMoment")("edges", polyMomentConfig_.edge_config);
+  // config_("gui")("polyhedronMoment")("show_edges", polyMomentConfig_.show_edges);
+  // config_("gui")("polyhedronMoment")("fixed_edge_color", polyMomentConfig_.fixed_edge_color);
+  // config_("gui")("polyhedronMoment")("vertices")("color", polyMomentConfig_.vertices_config.color);
+  // config_("gui")("polyhedronMoment")("vertices")("scale", polyMomentConfig_.vertices_config.scale);
+  // config_("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
+  // config_("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
+  //
+  // config_("gui")("polyhedronZMP")("triangle_color", polyZMPConfig_.triangle_color);
+  // config_("gui")("polyhedronZMP")("show_triangle", polyZMPConfig_.show_triangle);
+  // config_("gui")("polyhedronZMP")("use_triangle_color", polyZMPConfig_.use_triangle_color);
+  // config_("gui")("polyhedronZMP")("edges", polyZMPConfig_.edge_config);
+  // config_("gui")("polyhedronZMP")("show_edges", polyZMPConfig_.show_edges);
+  // config_("gui")("polyhedronZMP")("fixed_edge_color", polyZMPConfig_.fixed_edge_color);
+  // config_("gui")("polyhedronZMP")("vertices")("color", polyZMPConfig_.vertices_config.color);
+  // config_("gui")("polyhedronZMP")("vertices")("scale", polyZMPConfig_.vertices_config.scale);
+  // config_("gui")("polyhedronZMP")("show_vertices", polyZMPConfig_.show_vertices);
+  // config_("gui")("polyhedronZMP")("fixed_vertices_color", polyZMPConfig_.fixed_vertices_color);
+  //
+  // config_("gui")("polyhedronZeroMomentArea")("triangle_color", polyZeroMomentAreaConfig_.triangle_color);
+  // config_("gui")("polyhedronZeroMomentArea")("show_triangle", polyZeroMomentAreaConfig_.show_triangle);
+  // config_("gui")("polyhedronZeroMomentArea")("use_triangle_color", polyZeroMomentAreaConfig_.use_triangle_color);
+  // config_("gui")("polyhedronZeroMomentArea")("edges", polyZeroMomentAreaConfig_.edge_config);
+  // config_("gui")("polyhedronZeroMomentArea")("show_edges", polyZeroMomentAreaConfig_.show_edges);
+  // config_("gui")("polyhedronZeroMomentArea")("fixed_edge_color", polyZeroMomentAreaConfig_.fixed_edge_color);
+  // config_("gui")("polyhedronZeroMomentArea")("vertices")("color", polyZeroMomentAreaConfig_.vertices_config.color);
+  // config_("gui")("polyhedronZeroMomentArea")("vertices")("scale", polyZeroMomentAreaConfig_.vertices_config.scale);
+  // config_("gui")("polyhedronZeroMomentArea")("show_vertices", polyZeroMomentAreaConfig_.show_vertices);
+  // config_("gui")("polyhedronZeroMomentArea")("fixed_vertices_color", polyZeroMomentAreaConfig_.fixed_vertices_color);
+  //
+  // guiScale_ = guiScale;
+  // category.push_back(name_);
+  // auto coeffsCat = category;
+  // coeffsCat.push_back("Coefficients");
+  // auto contactsCat = category;
+  // contactsCat.push_back("Contact Polytopes");
+  // auto CWCCat = category;
+  // CWCCat.push_back("Contact Wrench Cone");
+  //
+  // gui.addElement(
+  //     this, category,
+  //     mc_rtc::gui::Checkbox(
+  //         "Compute explicit regions", [this]() { return computeRegions_; },
+  //         [this]() { computeRegions_ = !computeRegions_; }),
+  //     mc_rtc::gui::Checkbox(
+  //         "Compute force poly from Hrep", [this]() { return HrepMode_; }, [this]() { HrepMode_ = !HrepMode_; }),
+  //     mc_rtc::gui::Checkbox(
+  //         "Compute moments", [this]() { return withMoments_; }, [this]() { withMoments_ = !withMoments_; }));
+  //
+  // // Debug options for the GUI
+  // gui.addElement(
+  //     this, category,
+  //     mc_rtc::gui::Checkbox(
+  //         "Combine with frictions", [this]() { return combineWithFriction_; },
+  //         [this]() { combineWithFriction_ = !combineWithFriction_; }),
+  //     mc_rtc::gui::Checkbox(
+  //         "DD friction cones", [this]() { return DDfrictionCones_; },
+  //         [this]() { DDfrictionCones_ = !DDfrictionCones_; }),
+  //     mc_rtc::gui::Checkbox(
+  //         "With eCMP-VRP offset", [this]() { return withVRPOffset_; }, [this]() { withVRPOffset_ = !withVRPOffset_;
+  //         }));
+  //
+  // for(const auto & contact : possibleContacts_)
+  // {
+  //   gui.addElement(this, coeffsCat,
+  //                  mc_rtc::gui::NumberSlider(
+  //                      fmt::format(contact + " force alpha [0.001-1]"),
+  //                      [this, contact]() { return getForceScalingFactor(contact); },
+  //                      // scale min at 0.001 instead of 0 to avoid handling zero polytope
+  //                      [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.001, 1.0),
+  //                  mc_rtc::gui::NumberInput(
+  //                      fmt::format(contact + " friction coefficient"),
+  //                      [this, contact]() { return getFrictionCoeff(contact); },
+  //                      [this, contact](double frictionCoeff) { getFrictionCoeff(contact) = frictionCoeff; }),
+  //                  mc_rtc::gui::IntegerInput(
+  //                      fmt::format(contact + " number of friction sides"),
+  //                      [this, contact]() { return getNbOfFrictionSides(contact); },
+  //                      [this, contact](int nbFrictionSides) { getNbOfFrictionSides(contact) = nbFrictionSides; }));
+  //
+  //   gui.addElement(this, contactsCat,
+  //                  mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
+  //                                          [this, contact]() { return getFrictionConesTriangles(contact); }),
+  //                  mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
+  //                                          [this, contact]() { return getForcePolyTriangles(contact); })/*,
+  //                  mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
+  //                                          [this, contact]() { return getContactMomentTriangles(contact); })*/);
+  // }
+  //
+  // gui.addElement(
+  //     this, CWCCat,
+  //     mc_rtc::gui::Polyhedron("CWC forces", polyForceConfig_, [this]() { return getCWCForceTriangles(); }),
+  //     /*mc_rtc::gui::Polyhedron("CWC moments", polyMomentConfig_, [this]() { return getCWCMomentTriangles(); }),*/
+  //     mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [this]() { return getZMPTriangles(); }),
+  //     mc_rtc::gui::Polyhedron("Zero moment region", polyZeroMomentAreaConfig_,
+  //                             [this]() { return getZeroMomentTriangles(); }));
 }
