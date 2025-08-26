@@ -75,11 +75,15 @@ void DynamicPolytope::computeRegions()
   {
     // TODO: Build input for each contact
     // and replace this call
+    auto start_constructor = mc_rtc::clock::now();
     auto & job = feasiblePolytopesJobs_[contactName];
+    auto dt_constructor = mc_rtc::clock::now() - start_constructor;
+    job.timers.dt_constructor = dt_constructor;
     job.HrepMode_ = HrepMode_; // XXX
 
     if(!job.running())
     {
+      auto start_copy_input = mc_rtc::clock::now();
       auto & input = job.input;
       input.contactName = contactName;
       input.mb = robot.mb();
@@ -89,20 +93,26 @@ void DynamicPolytope::computeRegions()
       input.surface = robot.surface(contactName).copy();
       input.surfacePose = input.surface->X_0_s(robot);
       input.accW = robot.accW();
-      input.refContactTransform = refContactTransforms_.at(contactName),
-      input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName),
-      input.forceScalingFactors = forceScalingFactors_.at(contactName),
-      input.frictionCoefficients = frictionCoefficients_.at(contactName),
+      input.refContactTransform = refContactTransforms_.at(contactName);
+      input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName);
+      input.forceScalingFactors = forceScalingFactors_.at(contactName);
+      input.frictionCoefficients = frictionCoefficients_.at(contactName);
+      job.timers.dt_copyInputs = mc_rtc::clock::now() - start_copy_input;
 
       // Job starts as an async task, use job.checkResult() later to know whether it is finished and retrive its value
-          job.startAsync();
+      auto start_async = mc_rtc::clock::now();
+      job.startAsync();
+      job.timers.dt_startAsync = mc_rtc::clock::now() - start_async;
     }
   }
 
   // Step 2: wait for finished individual feasible regions
   // Wait for finished threads and join them, then update their matrix constraints
+  // FIXME: very costly ~1.5ms
+  auto start_debug = mc_rtc::clock::now();
   for(const auto & contactName : activeContacts_)
   {
+    mc_rtc::log::info("Active Contact: {}", contactName);
     auto & job = feasiblePolytopesJobs_[contactName];
     if(job.checkResult())
     {
@@ -110,6 +120,7 @@ void DynamicPolytope::computeRegions()
       updateRBDynPolytopes(result.forcePolyPlanes.first, result.forcePolyPlanes.second, contactsRBDyn_.at(contactName));
     }
   }
+  dt_debug_ = mc_rtc::clock::now() - start_debug;
 
   // Remove contacts
   for(const auto & removeContact : contactsToRemove_)
@@ -131,8 +142,9 @@ void DynamicPolytope::computeRegions()
   // Update contacts GUI
   if(contactsUpdated_)
   {
-    mc_rtc::log::info("[{}] Contacts updated, updating GUI", name_);
+    // FIXME: wrong, we need to wait until we have a result for the contact to do that
     updateGUI();
+    // XXX: we do not wait for the contact but it's okish as nothing depends on the result for now
     updateLogger();
     contactsUpdated_ = false;
   }
@@ -151,6 +163,7 @@ void DynamicPolytope::computeRegions()
   //     minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
   //   }
   // }
+  updateGUI(); // FIXME: inefficient to do it all the time
 
   // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updati
   dt_loop_total_ = mc_rtc::clock::now() - start_loop;
@@ -687,6 +700,7 @@ void computeQhullHrep(std::vector<double> & points, boost::shared_ptr<Polytope_R
 //                                                        ContactTimers & timers)
 ContactPolytopeResult ContactPolytopeJob::computePolytopeJob()
 {
+  auto start_job = mc_rtc::clock::now();
   ContactPolytopeResult result;
   auto & frictionCone = result.frictionCone;
   auto & actuationPolytope = result.actuationPolytope;
@@ -762,6 +776,8 @@ ContactPolytopeResult ContactPolytopeJob::computePolytopeJob()
                                result.frictionConesPlanes.second);
   updatePlanesMatrixConstraint(result.actuationPolytope, result.forcePolyPlanes.first, result.forcePolyPlanes.second);
 
+  result.updateTrianglesGUIPolytopix(guiScale_, input.surfacePose);
+  timers.dt_total_job = mc_rtc::clock::now() - start_job;
   return result;
 }
 
@@ -1346,7 +1362,9 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
   auto prefix = name_;
   logger_ = &logger;
   logger.addLogEntry("perf_" + prefix + "_totalLoop", this, [this]() { return dt_loop_total().count(); });
+  logger.addLogEntry("perf_" + prefix + "_startAsync", this, [this]() { return dt_start_async_.count(); });
   logger.addLogEntry("perf_" + prefix + "_computeContactSet", this, [this]() { return dt_contactSet().count(); });
+  logger.addLogEntry("perf_" + prefix + "_dt_debug", this, [this]() { return dt_debug_.count(); });
 
   updateLogger();
 
@@ -1376,10 +1394,7 @@ void DynamicPolytope::updateLogger()
   for(auto & [_, job] : feasiblePolytopesJobs_)
   {
     const auto & result = job.lastResult();
-    if(result)
-    {
-      job.addToLogger(*logger_, name_);
-    }
+    job.addToLogger(*logger_, name_);
   }
 }
 

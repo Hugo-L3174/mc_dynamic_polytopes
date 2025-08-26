@@ -10,6 +10,7 @@
 
 #include <RBDyn/Coriolis.h>
 #include <SpaceVecAlg/SpaceVecAlg>
+#include <boost/smart_ptr/make_shared_object.hpp>
 
 #include <mc_control/fsm/Controller.h>
 #include <mc_rtc/clock.h>
@@ -37,13 +38,19 @@ struct ContactTimers
   mc_rtc::duration_ms dt_forcePolytope = mc_rtc::duration_ms::zero();
   mc_rtc::duration_ms dt_intersection = mc_rtc::duration_ms::zero();
   mc_rtc::duration_ms dt_contactTotal = mc_rtc::duration_ms::zero();
+  mc_rtc::duration_ms dt_startAsync = mc_rtc::duration_ms::zero();
+  mc_rtc::duration_ms dt_copyInputs = mc_rtc::duration_ms::zero();
+  mc_rtc::duration_ms dt_constructor = mc_rtc::duration_ms::zero();
+  mc_rtc::duration_ms dt_total_job = mc_rtc::duration_ms::zero();
 };
 
 struct ContactPolytopeResult
 {
   ContactPolytopeResult()
-  : frictionCone(new Polytope_Rn()), actuationPolytope(new Polytope_Rn()), frictionConeMoments(new Polytope_Rn())
   {
+    frictionCone = boost::make_shared<Polytope_Rn>();
+    actuationPolytope = boost::make_shared<Polytope_Rn>();
+    frictionConeMoments = boost::make_shared<Polytope_Rn>();
     // XXX: what's the point of this initialization
     // Here initialize planes as simple friction cones to have a sane constraint at first iteration
     // The rotX_r1_r2 matrix would be the identity in a default case
@@ -144,25 +151,10 @@ struct ContactPolytopeJob
    */
   void startAsync()
   {
+    auto start_async = mc_rtc::clock::now();
     running_ = true;
     futurePolytope = std::async(std::bind(&ContactPolytopeJob::computePolytopeJob, this));
-    // #ifndef WIN32
-    //     // Lower thread priority so that it has a lesser priority than the real time thread
-    //     auto th_handle = feasiblePolytopesThreads_.at(contactName).native_handle();
-    //     int policy = 0;
-    //     sched_param param{};
-    //     pthread_getschedparam(th_handle, &policy, &param);
-    //     param.sched_priority = 10;
-    //     if(pthread_setschedparam(th_handle, SCHED_RR, &param) != 0)
-    //     {
-    //       // XXX Check if warning exists on real time kernel
-    //       // mc_rtc::log::warning(
-    //       //     "[{}] {} thread: failed to lower thread priority. If you are running on a real-time system, this
-    //       might "
-    //       //     "cause latency to the real-time loop.",
-    //       //     name_, contactName);
-    //     }
-    // #endif
+    timers.dt_startAsync = mc_rtc::clock::now() - start_async;
   }
 
   /**
@@ -180,10 +172,10 @@ struct ContactPolytopeJob
    */
   bool checkResult()
   {
-    if(futurePolytope.valid())
+    if(futurePolytope.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
     {
+      mc_rtc::log::info("Got result for contact {}", input.contactName);
       lastResult_ = futurePolytope.get();
-      lastResult_->updateTrianglesGUIPolytopix(guiScale_, input.surfacePose);
       running_ = false;
       return true;
     }
@@ -212,6 +204,14 @@ struct ContactPolytopeJob
                        [this, contact]() { return timers.dt_intersection.count(); });
     logger.addLogEntry("perf_" + prefix + "_" + contact + "_Total", this,
                        [this]() { return timers.dt_contactTotal.count(); });
+    logger.addLogEntry("perf_" + prefix + "_" + contact + "_startAsync", this,
+                       [this]() { return timers.dt_startAsync.count(); });
+    logger.addLogEntry("perf_" + prefix + "_" + contact + "_copyInputs", this,
+                       [this]() { return timers.dt_copyInputs.count(); });
+    logger.addLogEntry("perf_" + prefix + "_" + contact + "_constructor", this,
+                       [this]() { return timers.dt_constructor.count(); });
+    logger.addLogEntry("perf_" + prefix + "_" + contact + "_totalJob", this,
+                       [this]() { return timers.dt_total_job.count(); });
   }
 
   void removeFromLogger()
@@ -673,6 +673,7 @@ protected:
   HRepXd zeroMomentPlanes_;
 
   // timers to measure computation times
+  mc_rtc::duration_ms dt_start_async_;
   mc_rtc::duration_ms dt_loop_total_;
   mc_rtc::duration_ms dt_compute_contactSet_;
   mc_rtc::duration_ms dt_compute_minkSum_;
@@ -680,6 +681,7 @@ protected:
   mc_rtc::duration_ms dt_compute_guiTrianglesContacts_;
   mc_rtc::duration_ms dt_compute_guiTrianglesRegions_ = mc_rtc::duration_ms::zero();
   mc_rtc::duration_ms dt_zeroMoment_intersection_;
+  mc_rtc::duration_ms dt_debug_;
 
   // map of polytope triangles for display
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> frictionConesTrianglesMap_;
