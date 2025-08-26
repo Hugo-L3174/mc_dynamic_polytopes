@@ -17,6 +17,7 @@
 #include <mc_rtc/logging.h>
 #include <Tasks/QPContacts.h>
 
+#include "GUIComputations.h"
 #include "WrenchCones.h"
 
 #include <politopix/PolyhedralAlgorithms_Rn.h>
@@ -54,6 +55,20 @@ struct ContactPolytopeResult
     forcePolyPlanes = newPlanes;
   }
 
+  void updateTrianglesGUIPolytopix(double guiScale, const sva::PTransformd & contactPose)
+  {
+    if(actuationPolytope->dimension() == 3)
+    {
+      update3DPolyTrianglesPolitopix(frictionCone, frictionConeTriangles, guiScale, contactPose);
+      update3DPolyTrianglesPolitopix(actuationPolytope, forcePolyTriangles, guiScale, contactPose);
+    }
+    else
+    {
+      update6DPolyTrianglesPolitopix(actuationPolytope, forcePolyTriangles, momentPolytopesTriangles, guiScale,
+                                     contactPose);
+    }
+  }
+
   // We keep the friction cones as polytope objects, but they are actually polyhedral cones and will not be bounded
   boost::shared_ptr<Polytope_Rn> frictionCone;
   // The bounded actuation polytopes
@@ -62,6 +77,10 @@ struct ContactPolytopeResult
 
   HRepXd frictionConesPlanes;
   HRepXd forcePolyPlanes;
+
+  std::vector<std::array<Eigen::Vector3d, 3>> frictionConeTriangles;
+  std::vector<std::array<Eigen::Vector3d, 3>> forcePolyTriangles;
+  std::vector<std::array<Eigen::Vector3d, 3>> momentPolytopesTriangles;
 };
 
 struct ContactPolytopeInput
@@ -71,6 +90,7 @@ struct ContactPolytopeInput
   std::shared_ptr<mc_rbdyn::Surface> surface;
   sva::MotionVecd accW;
   std::vector<std::vector<double>> tl, tu;
+  sva::PTransformd surfacePose;
 
   // TODO: sane defaults
   std::string contactName;
@@ -110,6 +130,7 @@ struct ContactPolytopeJob
   bool combineWithFriction_ = true;
   bool DDfrictionCones_ = false;
   bool HrepMode_ = false;
+  double guiScale_ = 0.001;
 
   /**
    * Starts the async job defined in \ref computePolytopeJob()
@@ -156,6 +177,7 @@ struct ContactPolytopeJob
     if(futurePolytope.valid())
     {
       lastResult_ = futurePolytope.get();
+      lastResult_.updateTrianglesGUIPolytopix(guiScale_, input.surfacePose);
       running_ = false;
       return true;
     }
@@ -164,6 +186,7 @@ struct ContactPolytopeJob
 
   /**
    * Get the last result
+   * One should check if we have a result using checkResult
    */
   const ContactPolytopeResult & lastResult() const noexcept
   {
@@ -211,10 +234,6 @@ struct DynamicPolytope
   // the target surface of the contact (only the orientation is used for the friction cone)
   void setControllerContacts(const std::map<std::string, sva::PTransformd> & contacts)
   {
-    auto waitForLock = mc_rtc::clock::now();
-    std::lock_guard<std::mutex> lock(contactSetMutex_);
-    mc_rtc::duration_ms lockTime = mc_rtc::clock::now() - waitForLock;
-    // mc_rtc::log::critical("Controller waited {}ms to get contact lock", lockTime.count());
     // XXX remove this map from header if switch to rbdyn contacts
     refContactTransforms_.clear();
     for(const auto & contact : contacts)
@@ -233,7 +252,6 @@ struct DynamicPolytope
 
   void setControllerContacts(const std::map<std::string, mc_rbdyn::Contact &> & contacts)
   {
-    std::lock_guard<std::mutex> lock(contactSetMutex_);
     refContactTransforms_.clear();
     contactsRBDyn_ = contacts;
     for(const auto & contact : contacts)
@@ -279,10 +297,9 @@ struct DynamicPolytope
 
   // ------------------------------------------------------> mc_rtc interface functions
 
-  void addToGUI(mc_rtc::gui::StateBuilder & gui,
-                double guiScale = 0.001,
-                std::vector<std::string> category = {"DynamicPolytopes"});
-  void removeFromGUI(mc_rtc::gui::StateBuilder & gui);
+  std::vector<std::string> guiCategory_ = {"DynamicPolytopes"};
+
+  void addToGUI(mc_rtc::gui::StateBuilder * gui);
   void addToLogger(mc_rtc::Logger & logger, const std::string & prefix = "DynamicPolytopes_");
   void removeFromLogger(mc_rtc::Logger & logger);
 
@@ -379,6 +396,8 @@ struct DynamicPolytope
   // Eigen::Vector3d projectPointInZeroMomentRegion(Eigen::Vector3d testedPoint);
 
 protected:
+  void updateGUI();
+
   // Updates the internal maps of triangles of the contacts for gui display
   void updateTrianglesContactsGUIPolitopix();
 
@@ -451,6 +470,7 @@ protected:
   {
     // take the previous set of contacts
     contactsToRemove_ = activeContacts_;
+    auto previousActiveContacts = activeContacts_;
     activeContacts_.clear();
     for(const auto & contact : refContactTransforms_)
     {
@@ -459,6 +479,8 @@ protected:
       // every active contact does not need to be removed
       contactsToRemove_.erase(contact.first);
     }
+
+    contactsUpdated_ = activeContacts_ != previousActiveContacts || !contactsToRemove_.empty();
   }
 
   // Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
@@ -591,9 +613,11 @@ protected:
 
   std::string name_;
   const mc_rbdyn::Robot & robot_;
+  mc_rtc::gui::StateBuilder * gui_ = nullptr;
   mc_rtc::Configuration config_;
   std::set<std::string> possibleContacts_;
   std::set<std::string> activeContacts_;
+  bool contactsUpdated_ = false;
   std::set<std::string> contactsToRemove_;
 
   // map of the contact transforms X_r1_r2, with r1 the controlled robot frame and r2 the target frame of the contact

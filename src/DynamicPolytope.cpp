@@ -1,5 +1,4 @@
 #include "DynamicPolytope.h"
-#include "GUIComputations.h"
 
 DynamicPolytope::DynamicPolytope(const std::string & name,
                                  const mc_rbdyn::Robot & robot,
@@ -95,6 +94,7 @@ void DynamicPolytope::computeRegions()
       input.tl = robot.tl();
       input.tu = robot.tu();
       input.surface = robot.surface(contactName).copy();
+      input.surfacePose = input.surface->X_0_s(robot);
       input.accW = robot.accW();
       input.refContactTransform = refContactTransforms_.at(contactName),
       input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName),
@@ -136,7 +136,12 @@ void DynamicPolytope::computeRegions()
   // dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
 
   // Update contacts GUI
-  updateTrianglesContactsGUIPolitopix();
+  // updateTrianglesContactsGUIPolitopix();
+  if(contactsUpdated_)
+  {
+    updateGUI();
+    contactsUpdated_ = false;
+  }
 
   // Steps 3-6: launch the rest everytime the previous full region was computed
   // if(computeRegions_) // TODO: restore implementation
@@ -1368,56 +1373,99 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger, const std::string & p
   // }
 }
 
-// TODO: restore gui
-void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale, std::vector<std::string> category)
+void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * gui)
 {
-  // config_("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
-  // config_("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
-  // config_("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
-  // config_("gui")("polyhedronForce")("edges", polyForceConfig_.edge_config);
-  // config_("gui")("polyhedronForce")("show_edges", polyForceConfig_.show_edges);
-  // config_("gui")("polyhedronForce")("fixed_edge_color", polyForceConfig_.fixed_edge_color);
-  // config_("gui")("polyhedronForce")("vertices")("color", polyForceConfig_.vertices_config.color);
-  // config_("gui")("polyhedronForce")("vertices")("scale", polyForceConfig_.vertices_config.scale);
-  // config_("gui")("polyhedronForce")("show_vertices", polyForceConfig_.show_vertices);
-  // config_("gui")("polyhedronForce")("fixed_vertices_color", polyForceConfig_.fixed_vertices_color);
-  //
-  // config_("gui")("polyhedronMoment")("triangle_color", polyMomentConfig_.triangle_color);
-  // config_("gui")("polyhedronMoment")("show_triangle", polyMomentConfig_.show_triangle);
-  // config_("gui")("polyhedronMoment")("use_triangle_color", polyMomentConfig_.use_triangle_color);
-  // config_("gui")("polyhedronMoment")("edges", polyMomentConfig_.edge_config);
-  // config_("gui")("polyhedronMoment")("show_edges", polyMomentConfig_.show_edges);
-  // config_("gui")("polyhedronMoment")("fixed_edge_color", polyMomentConfig_.fixed_edge_color);
-  // config_("gui")("polyhedronMoment")("vertices")("color", polyMomentConfig_.vertices_config.color);
-  // config_("gui")("polyhedronMoment")("vertices")("scale", polyMomentConfig_.vertices_config.scale);
-  // config_("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
-  // config_("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
-  //
-  // config_("gui")("polyhedronZMP")("triangle_color", polyZMPConfig_.triangle_color);
-  // config_("gui")("polyhedronZMP")("show_triangle", polyZMPConfig_.show_triangle);
-  // config_("gui")("polyhedronZMP")("use_triangle_color", polyZMPConfig_.use_triangle_color);
-  // config_("gui")("polyhedronZMP")("edges", polyZMPConfig_.edge_config);
-  // config_("gui")("polyhedronZMP")("show_edges", polyZMPConfig_.show_edges);
-  // config_("gui")("polyhedronZMP")("fixed_edge_color", polyZMPConfig_.fixed_edge_color);
-  // config_("gui")("polyhedronZMP")("vertices")("color", polyZMPConfig_.vertices_config.color);
-  // config_("gui")("polyhedronZMP")("vertices")("scale", polyZMPConfig_.vertices_config.scale);
-  // config_("gui")("polyhedronZMP")("show_vertices", polyZMPConfig_.show_vertices);
-  // config_("gui")("polyhedronZMP")("fixed_vertices_color", polyZMPConfig_.fixed_vertices_color);
-  //
-  // config_("gui")("polyhedronZeroMomentArea")("triangle_color", polyZeroMomentAreaConfig_.triangle_color);
-  // config_("gui")("polyhedronZeroMomentArea")("show_triangle", polyZeroMomentAreaConfig_.show_triangle);
-  // config_("gui")("polyhedronZeroMomentArea")("use_triangle_color", polyZeroMomentAreaConfig_.use_triangle_color);
-  // config_("gui")("polyhedronZeroMomentArea")("edges", polyZeroMomentAreaConfig_.edge_config);
-  // config_("gui")("polyhedronZeroMomentArea")("show_edges", polyZeroMomentAreaConfig_.show_edges);
-  // config_("gui")("polyhedronZeroMomentArea")("fixed_edge_color", polyZeroMomentAreaConfig_.fixed_edge_color);
-  // config_("gui")("polyhedronZeroMomentArea")("vertices")("color", polyZeroMomentAreaConfig_.vertices_config.color);
-  // config_("gui")("polyhedronZeroMomentArea")("vertices")("scale", polyZeroMomentAreaConfig_.vertices_config.scale);
-  // config_("gui")("polyhedronZeroMomentArea")("show_vertices", polyZeroMomentAreaConfig_.show_vertices);
-  // config_("gui")("polyhedronZeroMomentArea")("fixed_vertices_color", polyZeroMomentAreaConfig_.fixed_vertices_color);
-  //
-  // guiScale_ = guiScale;
-  // category.push_back(name_);
-  // auto coeffsCat = category;
+  gui_ = gui;
+  updateGUI();
+}
+
+// TODO: restore gui
+void DynamicPolytope::updateGUI()
+{
+  auto category = guiCategory_;
+  auto & gui = *gui_;
+  gui.removeCategory(guiCategory_);
+
+  // XXX: simplify this
+  config_("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
+  config_("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
+  config_("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
+  config_("gui")("polyhedronForce")("edges", polyForceConfig_.edge_config);
+  config_("gui")("polyhedronForce")("show_edges", polyForceConfig_.show_edges);
+  config_("gui")("polyhedronForce")("fixed_edge_color", polyForceConfig_.fixed_edge_color);
+  config_("gui")("polyhedronForce")("vertices")("color", polyForceConfig_.vertices_config.color);
+  config_("gui")("polyhedronForce")("vertices")("scale", polyForceConfig_.vertices_config.scale);
+  config_("gui")("polyhedronForce")("show_vertices", polyForceConfig_.show_vertices);
+  config_("gui")("polyhedronForce")("fixed_vertices_color", polyForceConfig_.fixed_vertices_color);
+
+  config_("gui")("polyhedronMoment")("triangle_color", polyMomentConfig_.triangle_color);
+  config_("gui")("polyhedronMoment")("show_triangle", polyMomentConfig_.show_triangle);
+  config_("gui")("polyhedronMoment")("use_triangle_color", polyMomentConfig_.use_triangle_color);
+  config_("gui")("polyhedronMoment")("edges", polyMomentConfig_.edge_config);
+  config_("gui")("polyhedronMoment")("show_edges", polyMomentConfig_.show_edges);
+  config_("gui")("polyhedronMoment")("fixed_edge_color", polyMomentConfig_.fixed_edge_color);
+  config_("gui")("polyhedronMoment")("vertices")("color", polyMomentConfig_.vertices_config.color);
+  config_("gui")("polyhedronMoment")("vertices")("scale", polyMomentConfig_.vertices_config.scale);
+  config_("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
+  config_("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
+
+  config_("gui")("polyhedronZMP")("triangle_color", polyZMPConfig_.triangle_color);
+  config_("gui")("polyhedronZMP")("show_triangle", polyZMPConfig_.show_triangle);
+  config_("gui")("polyhedronZMP")("use_triangle_color", polyZMPConfig_.use_triangle_color);
+  config_("gui")("polyhedronZMP")("edges", polyZMPConfig_.edge_config);
+  config_("gui")("polyhedronZMP")("show_edges", polyZMPConfig_.show_edges);
+  config_("gui")("polyhedronZMP")("fixed_edge_color", polyZMPConfig_.fixed_edge_color);
+  config_("gui")("polyhedronZMP")("vertices")("color", polyZMPConfig_.vertices_config.color);
+  config_("gui")("polyhedronZMP")("vertices")("scale", polyZMPConfig_.vertices_config.scale);
+  config_("gui")("polyhedronZMP")("show_vertices", polyZMPConfig_.show_vertices);
+  config_("gui")("polyhedronZMP")("fixed_vertices_color", polyZMPConfig_.fixed_vertices_color);
+
+  config_("gui")("polyhedronZeroMomentArea")("triangle_color", polyZeroMomentAreaConfig_.triangle_color);
+  config_("gui")("polyhedronZeroMomentArea")("show_triangle", polyZeroMomentAreaConfig_.show_triangle);
+  config_("gui")("polyhedronZeroMomentArea")("use_triangle_color", polyZeroMomentAreaConfig_.use_triangle_color);
+  config_("gui")("polyhedronZeroMomentArea")("edges", polyZeroMomentAreaConfig_.edge_config);
+  config_("gui")("polyhedronZeroMomentArea")("show_edges", polyZeroMomentAreaConfig_.show_edges);
+  config_("gui")("polyhedronZeroMomentArea")("fixed_edge_color", polyZeroMomentAreaConfig_.fixed_edge_color);
+  config_("gui")("polyhedronZeroMomentArea")("vertices")("color", polyZeroMomentAreaConfig_.vertices_config.color);
+  config_("gui")("polyhedronZeroMomentArea")("vertices")("scale", polyZeroMomentAreaConfig_.vertices_config.scale);
+  config_("gui")("polyhedronZeroMomentArea")("show_vertices", polyZeroMomentAreaConfig_.show_vertices);
+  config_("gui")("polyhedronZeroMomentArea")("fixed_vertices_color", polyZeroMomentAreaConfig_.fixed_vertices_color);
+
+  category.push_back(name_);
+  auto coeffsCat = category;
+  auto contactsCat = category;
+  contactsCat.push_back("Contact Polytopes");
+  auto CWCCat = category;
+  CWCCat.push_back("Contact Wrench Cone");
+
+  for(const auto & contact : activeContacts_)
+  {
+    const auto & job = feasiblePolytopesJobs_.at(contact);
+    const auto & result = job.lastResult();
+    gui.addElement(this, coeffsCat,
+                   mc_rtc::gui::NumberSlider(
+                       fmt::format(contact + " force alpha [0.001-1]"),
+                       [this, contact]() { return getForceScalingFactor(contact); },
+                       // scale min at 0.001 instead of 0 to avoid handling zero polytope
+                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.001, 1.0),
+                   mc_rtc::gui::NumberInput(
+                       fmt::format(contact + " friction coefficient"),
+                       [this, contact]() { return getFrictionCoeff(contact); },
+                       [this, contact](double frictionCoeff) { getFrictionCoeff(contact) = frictionCoeff; }),
+                   mc_rtc::gui::IntegerInput(
+                       fmt::format(contact + " number of friction sides"),
+                       [this, contact]() { return getNbOfFrictionSides(contact); },
+                       [this, contact](int nbFrictionSides) { getNbOfFrictionSides(contact) = nbFrictionSides; }));
+
+    gui.addElement(this, contactsCat,
+                   mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
+                                           [&result]() { return result.frictionConeTriangles; }),
+                   mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
+                                           [&result]() { return result.forcePolyTriangles; }),
+                   mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
+                                           [&result]() { return result.momentPolytopesTriangles; }));
+  }
+
   // coeffsCat.push_back("Coefficients");
   // auto contactsCat = category;
   // contactsCat.push_back("Contact Polytopes");
@@ -1449,28 +1497,6 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder & gui, double guiScale,
   //
   // for(const auto & contact : possibleContacts_)
   // {
-  //   gui.addElement(this, coeffsCat,
-  //                  mc_rtc::gui::NumberSlider(
-  //                      fmt::format(contact + " force alpha [0.001-1]"),
-  //                      [this, contact]() { return getForceScalingFactor(contact); },
-  //                      // scale min at 0.001 instead of 0 to avoid handling zero polytope
-  //                      [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.001, 1.0),
-  //                  mc_rtc::gui::NumberInput(
-  //                      fmt::format(contact + " friction coefficient"),
-  //                      [this, contact]() { return getFrictionCoeff(contact); },
-  //                      [this, contact](double frictionCoeff) { getFrictionCoeff(contact) = frictionCoeff; }),
-  //                  mc_rtc::gui::IntegerInput(
-  //                      fmt::format(contact + " number of friction sides"),
-  //                      [this, contact]() { return getNbOfFrictionSides(contact); },
-  //                      [this, contact](int nbFrictionSides) { getNbOfFrictionSides(contact) = nbFrictionSides; }));
-  //
-  //   gui.addElement(this, contactsCat,
-  //                  mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
-  //                                          [this, contact]() { return getFrictionConesTriangles(contact); }),
-  //                  mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
-  //                                          [this, contact]() { return getForcePolyTriangles(contact); })/*,
-  //                  mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
-  //                                          [this, contact]() { return getContactMomentTriangles(contact); })*/);
   // }
   //
   // gui.addElement(
