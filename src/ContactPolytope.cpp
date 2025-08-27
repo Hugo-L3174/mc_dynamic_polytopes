@@ -322,10 +322,10 @@ ContactPolytopeResult ContactPolytopeJob::computePolytopeJob()
   auto & frictionCone = result.frictionCone;
   auto & actuationPolytope = result.actuationPolytope;
   const auto & contactName = input.contactName;
-  const auto forceScalingFactor = input.forceScalingFactors;
+  const auto forceScalingFactor = input.forceScalingFactor;
   const auto numberOfFrictionSides = input.numberOfFrictionSides;
   const auto X_r1_r2 = input.refContactTransform; // XXX: double check
-  const auto frictionCoeff = input.frictionCoefficients;
+  const auto frictionCoeff = input.frictionCoefficient;
 
   // sva::PTransformd contactPose = robot.surfacePose(contactName);
   unsigned int dim = Rn::getDimension() == 3 ? 3 : 6;

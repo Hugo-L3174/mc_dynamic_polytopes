@@ -29,10 +29,6 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
     momentPolytopesTrianglesMap_.emplace(contact, newTrianglesArray);
 
     refContactTransforms_.emplace(contact, sva::PTransformd::Identity());
-
-    forceScalingFactors_.emplace(contact, defaultForceScale);
-    frictionCoefficients_.emplace(contact, defaultFrictionCoeff);
-    numbersOfFrictionSides_.emplace(contact, defaultFrictionSides);
   }
   // init CWC polytope
   CWCForces_.reset(new Polytope_Rn());
@@ -99,9 +95,11 @@ void DynamicPolytope::computeRegions()
       input.surfacePose = input.surface->X_0_s(robot);
       input.accW = robot.accW();
       input.refContactTransform = refContactTransforms_.at(contactName);
-      input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName);
-      input.forceScalingFactors = forceScalingFactors_.at(contactName);
-      input.frictionCoefficients = frictionCoefficients_.at(contactName);
+      // XXX: this uses the default value anyway
+      // input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName);
+      // input.forceScalingFactor = forceScalingFactors_.at(contactName);
+      input.frictionCoefficient = contactsRBDyn_.at(contactName).friction();
+
       job.timers.dt_copyInputs = mc_rtc::clock::now() - start_copy_input;
 
       // Job starts as an async task, use job.checkResult() later to know whether it is finished and retrive its value
@@ -892,50 +890,49 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)
   auto CWCCat = category;
   CWCCat.push_back("Contact Wrench Cone");
 
-  for(const auto & contact : activeContacts_)
+  auto updateJobsGlobalParams = [this]()
   {
-    auto & job = feasiblePolytopesJobs_[contact];
-    job.addToGUI(gui, category);
+    for(auto & [_, job] : feasiblePolytopesJobs_)
+    {
+      job.HrepMode_ = HrepMode_;
+      job.DDfrictionCones_ = DDfrictionCones_;
+      job.guiScale_ = guiScale_;
+      job.combineWithFriction_ = combineWithFriction_;
+    }
+  };
+  gui.addElement(this, category,
+                 mc_rtc::gui::Checkbox(
+                     "Compute explicit regions", [this]() { return computeRegions_; },
+                     [this]() { computeRegions_ = !computeRegions_; }),
+                 mc_rtc::gui::Checkbox(
+                     "Compute force poly from Hrep", [this]() { return HrepMode_; },
+                     [this, updateJobsGlobalParams]()
+                     {
+                       HrepMode_ = !HrepMode_;
+                       updateJobsGlobalParams();
+                     }),
+                 mc_rtc::gui::Checkbox(
+                     "Compute moments", [this]() { return withMoments_; }, [this]() { withMoments_ = !withMoments_; }));
 
-    // TODO: move to ContactPolytopes job
-    gui.addElement(this, coeffsCat,
-                   mc_rtc::gui::NumberSlider(
-                       fmt::format(contact + " force alpha [0.001-1]"),
-                       [this, contact]() { return getForceScalingFactor(contact); },
-                       // scale min at 0.001 instead of 0 to avoid handling zero polytope
-                       [this, contact](double scale) { getForceScalingFactor(contact) = scale; }, 0.001, 1.0),
-                   mc_rtc::gui::NumberInput(
-                       fmt::format(contact + " friction coefficient"),
-                       [this, contact]() { return getFrictionCoeff(contact); },
-                       [this, contact](double frictionCoeff) { getFrictionCoeff(contact) = frictionCoeff; }),
-                   mc_rtc::gui::IntegerInput(
-                       fmt::format(contact + " number of friction sides"),
-                       [this, contact]() { return getNbOfFrictionSides(contact); },
-                       [this, contact](int nbFrictionSides) { getNbOfFrictionSides(contact) = nbFrictionSides; }));
-  }
-
-  gui.addElement(
-      this, category,
-      mc_rtc::gui::Checkbox(
-          "Compute explicit regions", [this]() { return computeRegions_; },
-          [this]() { computeRegions_ = !computeRegions_; }),
-      mc_rtc::gui::Checkbox(
-          "Compute force poly from Hrep", [this]() { return HrepMode_; }, [this]() { HrepMode_ = !HrepMode_; }),
-      mc_rtc::gui::Checkbox(
-          "Compute moments", [this]() { return withMoments_; }, [this]() { withMoments_ = !withMoments_; }));
-  //
-  // // Debug options for the GUI
-  // gui.addElement(
-  //     this, category,
-  //     mc_rtc::gui::Checkbox(
-  //         "Combine with frictions", [this]() { return combineWithFriction_; },
-  //         [this]() { combineWithFriction_ = !combineWithFriction_; }),
-  //     mc_rtc::gui::Checkbox(
-  //         "DD friction cones", [this]() { return DDfrictionCones_; },
-  //         [this]() { DDfrictionCones_ = !DDfrictionCones_; }),
-  //     mc_rtc::gui::Checkbox(
-  //         "With eCMP-VRP offset", [this]() { return withVRPOffset_; }, [this]() { withVRPOffset_ = !withVRPOffset_;
-  //         }));
+  // Debug options for the GUI
+  gui.addElement(this, category,
+                 mc_rtc::gui::Checkbox(
+                     "Combine with frictions", [this]() { return combineWithFriction_; },
+                     [this, updateJobsGlobalParams]()
+                     {
+                       combineWithFriction_ = !combineWithFriction_;
+                       updateJobsGlobalParams();
+                     }),
+                 mc_rtc::gui::Checkbox(
+                     "DD friction cones", [this]() { return DDfrictionCones_; },
+                     [this, updateJobsGlobalParams]()
+                     {
+                       DDfrictionCones_ = !DDfrictionCones_;
+                       updateJobsGlobalParams();
+                     }));
+  // mc_rtc::gui::Checkbox(
+  //     "With eCMP-VRP offset", [this]() { return withVRPOffset_; }, [this]() { withVRPOffset_ = !withVRPOffset_;
+  //     }));
   //
   // gui.addElement(
   //     this, CWCCat,

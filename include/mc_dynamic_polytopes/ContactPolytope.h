@@ -26,6 +26,7 @@ namespace mc_dynamic_polytopes
 using HRepXd = std::pair<Eigen::MatrixXd, Eigen::VectorXd>;
 constexpr int defaultFrictionSides = 5;
 constexpr double defaultFrictionCoeff = 0.5;
+constexpr double defaultForceScale = 1;
 
 struct ContactTimers
 {
@@ -99,9 +100,13 @@ struct ContactPolytopeInput
   // TODO: sane defaults
   std::string contactName;
   sva::PTransformd refContactTransform;
-  int numberOfFrictionSides;
-  double forceScalingFactors;
-  double frictionCoefficients;
+
+  // number of sides for cones linearization
+  int numberOfFrictionSides = defaultFrictionSides;
+  // force scaling factor (alpha to be used to transfer between contacts)
+  double forceScalingFactor = defaultForceScale;
+  // friction coeff for the cones
+  double frictionCoefficient = defaultFrictionCoeff;
 };
 
 struct ContactPolytopeJob
@@ -220,14 +225,30 @@ struct ContactPolytopeJob
       auto contactsCat = category;
       contactsCat.push_back("Contact Polytopes");
       auto contact = input.contactName;
+      using namespace mc_rtc::gui;
 
       gui.addElement(this, contactsCat,
-                     mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
-                                             [&result]() { return result.frictionConeTriangles; }),
-                     mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
-                                             [&result]() { return result.forcePolyTriangles; }),
-                     mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
-                                             [&result]() { return result.momentPolytopesTriangles; }));
+                     Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
+                                [&result]() { return result.frictionConeTriangles; }),
+                     Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
+                                [&result]() { return result.forcePolyTriangles; }),
+                     Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
+                                [&result]() { return result.momentPolytopesTriangles; }));
+
+      gui.addElement(
+          this, coeffsCat,
+          NumberSlider(
+              fmt::format(contact + " force alpha [0.001-1]"), [this, contact]() { return input.forceScalingFactor; },
+              // scale min at 0.001 instead of 0 to avoid handling zero polytope
+              [this, contact](double scale) { input.forceScalingFactor = scale; }, 0.001, 1.0),
+          // FIXME: friction coefficient is set from RBDyn contact which overrides this input. Do we need to have the
+          // friciton configurable independently from the contact? NumberInput(
+          //     fmt::format(contact + " friction coefficient"),
+          //     [this, contact]() { return input.frictionCoefficient; },
+          //     [this, contact](double frictionCoeff) { input.frictionCoefficient = frictionCoeff; }),
+          IntegerInput(
+              fmt::format(contact + " number of friction sides"), [this]() { return input.numberOfFrictionSides; },
+              [this](int nbFrictionSides) { input.numberOfFrictionSides = nbFrictionSides; }));
     };
   }
 

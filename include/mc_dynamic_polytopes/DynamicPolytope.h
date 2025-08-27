@@ -28,8 +28,6 @@
 namespace mc_dynamic_polytopes
 {
 
-constexpr double defaultForceScale = 1;
-
 struct DynamicPolytope
 {
   DynamicPolytope(const std::string & name,
@@ -90,7 +88,6 @@ struct DynamicPolytope
         // if second robot, assume it is targeted and put identity
         refContactTransforms_.emplace(contactName, sva::PTransformd::Identity());
       }
-      getFrictionCoeff(contactName) = contactObj.friction();
     }
 
     // if computation has not started yet, launch it
@@ -99,14 +96,6 @@ struct DynamicPolytope
       computing_ = true;
       // signal main computation thread
       cv_.notify_one();
-    }
-  }
-
-  void setContactFrictions(const std::map<std::string, double> & contactFrictions)
-  {
-    for(const auto & friction : contactFrictions)
-    {
-      getFrictionCoeff(friction.first) = friction.second;
     }
   }
 
@@ -323,21 +312,6 @@ protected:
     return zeroMomentTriangles_;
   };
 
-  double & getForceScalingFactor(const std::string & name)
-  {
-    return forceScalingFactors_.at(name);
-  }
-
-  double & getFrictionCoeff(const std::string & name)
-  {
-    return frictionCoefficients_.at(name);
-  }
-
-  int & getNbOfFrictionSides(const std::string & name)
-  {
-    return numbersOfFrictionSides_.at(name);
-  }
-
   // ------------------------------------------------------> Internal variables
 
   std::string name_;
@@ -358,19 +332,12 @@ protected:
 
   std::map<std::string, mc_rbdyn::Contact &> contactsRBDyn_;
 
-  // map of the force scaling factors (alphas to be used to transfer between contacts)
-  std::map<std::string, double> forceScalingFactors_;
-
-  // friction coeffs for the cones, stored individually from contact name
-  std::map<std::string, double> frictionCoefficients_;
-  // number of sides for cones linearization, stored individually from contact name
-  std::map<std::string, int> numbersOfFrictionSides_;
-
   bool withMoments_;
   bool computeRegions_;
   bool HrepMode_;
   bool withVRPOffset_ = true;
   bool combineWithFriction_ = true;
+  bool DDfrictionCones_ = false;
 
   // politopix
 
