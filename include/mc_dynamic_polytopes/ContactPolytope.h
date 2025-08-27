@@ -32,15 +32,14 @@ constexpr double defaultForceScale = 1;
 
 struct ContactTimers
 {
-  using duration_ms = mc_rtc::duration_ms;
-  duration_ms dt_frictionCone = duration_ms::zero();
-  duration_ms dt_forcePolytope = duration_ms::zero();
-  duration_ms dt_intersection = duration_ms::zero();
-  duration_ms dt_contactTotal = duration_ms::zero();
-  duration_ms dt_startAsync = duration_ms::zero();
-  duration_ms dt_copyInputs = duration_ms::zero();
-  duration_ms dt_constructor = duration_ms::zero();
-  duration_ms dt_total_job = duration_ms::zero();
+  std::atomic<double> dt_frictionCone = 0.;
+  std::atomic<double> dt_forcePolytope = 0.;
+  std::atomic<double> dt_intersection = 0.;
+  std::atomic<double> dt_contactTotal = 0.;
+  std::atomic<double> dt_copyInputs = 0.;
+  std::atomic<double> dt_constructor = 0.;
+  std::atomic<double> dt_double_description = 0.;
+  std::atomic<double> dt_qhull = 0.;
 };
 
 struct ContactPolytopeResult
@@ -138,17 +137,16 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
   // CRTP: deferred logger implementation
   void addToLoggerImpl()
   {
-    auto contact = input.contactName;
-    auto contactPrefix = "perf_" + loggerPrefix_ + "_" + contact + "_";
-    logger_->addLogEntry(contactPrefix + "frictionCone", this,
-                         [this]() { return contactTimers.dt_frictionCone.count(); });
-    logger_->addLogEntry(contactPrefix + "forcePolytope", this,
-                         [this]() { return contactTimers.dt_forcePolytope.count(); });
-    logger_->addLogEntry(contactPrefix + "intersection", this,
-                         [this]() { return contactTimers.dt_intersection.count(); });
-    logger_->addLogEntry(contactPrefix + "Total", this, [this]() { return contactTimers.dt_contactTotal.count(); });
-    logger_->addLogEntry(contactPrefix + "startAsync", this, [this]() { return contactTimers.dt_startAsync.count(); });
-    logger_->addLogEntry(contactPrefix + "totalJob", this, [this]() { return contactTimers.dt_total_job.count(); });
+    auto contact = input_.contactName;
+    auto contactPrefix = "perf_" + loggerPrefix_ + "_" + contact + "_async_";
+    logger_->addLogEntry(contactPrefix + "frictionCone [ms]", this,
+                         [this]() { return contactTimers.dt_frictionCone.load(); });
+    logger_->addLogEntry(contactPrefix + "forcePolytope [ms]", this,
+                         [this]() { return contactTimers.dt_forcePolytope.load(); });
+    logger_->addLogEntry(contactPrefix + "intersection [ms]", this,
+                         [this]() { return contactTimers.dt_intersection.load(); });
+    logger_->addLogEntry(contactPrefix + "contactTotal [ms]", this,
+                         [this]() { return contactTimers.dt_contactTotal.load(); });
   }
 
   // CRTP: deferred GUI implementation
@@ -158,7 +156,7 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
     auto coeffsCat = guiCategory_;
     auto contactsCat = guiCategory_;
     contactsCat.push_back("Contact Polytopes");
-    auto contact = input.contactName;
+    auto contact = input_.contactName;
     using namespace mc_rtc::gui;
 
     gui_->addElement(this, contactsCat,
@@ -172,11 +170,11 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
     gui_->addElement(
         this, coeffsCat,
         NumberSlider(
-            fmt::format(contact + " force alpha [0.001-1]"), [this, contact]() { return input.forceScalingFactor; },
-            [this, contact](double scale) { input.forceScalingFactor = scale; }, 0.001, 1.0),
+            fmt::format(contact + " force alpha [0.001-1]"), [this, contact]() { return input_.forceScalingFactor; },
+            [this](double scale) { input_.forceScalingFactor = scale; }, 0.001, 1.0),
         IntegerInput(
-            fmt::format(contact + " number of friction sides"), [this]() { return input.numberOfFrictionSides; },
-            [this](int nbFrictionSides) { input.numberOfFrictionSides = nbFrictionSides; }));
+            fmt::format(contact + " number of friction sides"), [this]() { return input_.numberOfFrictionSides; },
+            [this](int nbFrictionSides) { input_.numberOfFrictionSides = nbFrictionSides; }));
   }
 
   void load(const mc_rtc::Configuration & config)

@@ -12,7 +12,7 @@ boost::shared_ptr<Polytope_Rn> ZMPRegionJob::computeZMPRegion(Eigen::Vector3d co
 
   std::vector<double> qhullVect;
   const std::string contactTest = "LeftFoot";
-  for(const auto & contactInput : input.contactInputs)
+  for(const auto & contactInput : input_.contactInputs)
   {
     // Important ! points for surfaces give the points coordinates from the parent link, not from the
     // surface origin, so X_b_p and not X_s_p

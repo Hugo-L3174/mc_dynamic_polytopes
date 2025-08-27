@@ -374,7 +374,6 @@ protected:
   HRepXd zeroMomentPlanes_;
 
   // timers to measure computation times
-  mc_rtc::duration_ms dt_start_async_;
   mc_rtc::duration_ms dt_loop_total_;
   mc_rtc::duration_ms dt_compute_contactSet_;
   mc_rtc::duration_ms dt_compute_minkSum_;

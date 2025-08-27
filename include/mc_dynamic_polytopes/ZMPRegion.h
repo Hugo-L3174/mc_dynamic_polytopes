@@ -53,7 +53,7 @@ struct ZMPRegionJob : MakeAsyncJob<ZMPRegionJob, ZMPRegionInput, ZMPRegionResult
   ZMPRegionResult computeJob()
   {
     ZMPRegionResult result;
-    result.zmpRegion = computeZMPRegion(input.comPosition);
+    result.zmpRegion = computeZMPRegion(input_.comPosition);
     return result;
   }
 

@@ -3,6 +3,7 @@
 #include <mc_rtc/gui/StateBuilder.h>
 #include <mc_rtc/log/Logger.h>
 #include <future>
+#include <mc_dynamic_polytopes/Time.h>
 #include <optional>
 
 // TODO: integrate into mc_rtc
@@ -18,8 +19,11 @@ namespace mc_dynamic_polytopes
  *
  * Upon destruction, any associated GUI elements and log entries are automatically removed.
  *
- * The `input` member may be modified when the async task is not running (i.e., before calling startAsync or when
- * running() is false). The input should not be modified while the async task is running (running() is true).
+ * The `input_` member may be modified when the async task is not running (i.e., before calling startAsync or when
+ * running() is false). The input should not be modified while the async task is running (running() is true). Use
+ * input() to access it. Note that while the input() method implements a safeguard that throws if the job is running, it
+ * does not inherently make modifying the input in-place safe, ensure that your code does not start another async job
+ * while you are modifying the input.
  *
  * @tparam Derived The child class type (CRTP).
  * @tparam Input The input type for the job.
@@ -79,14 +83,16 @@ struct AsyncJob
 {
   struct Timers
   {
-    mc_rtc::duration_ms dt_startAsync = mc_rtc::duration_ms::zero();
+    double dt_startAsync = 0;
+    double dt_checkResult = 0;
+    double dt_loggerImpl = 0;
+    double dt_guiImpl = 0;
+
+    // Async loggers
+    // Technically not guaranteed to be portable on all plateforms, but should be fine for the ones we care about
+    std::atomic<double> dt_compute{0};
   };
 
-public:
-  Timers timers;
-  Input input;
-
-public:
   AsyncJob() = default;
   AsyncJob(const AsyncJob &) = delete;
   AsyncJob & operator=(const AsyncJob &) = delete;
@@ -99,6 +105,25 @@ public:
     removeFromGUI();
   }
 
+  /**
+   * @brief Access the input data for the job.
+   *
+   * Returns a writable reference to the input. Throws std::runtime_error if the async job is running.
+   * Only modify the input when running() is false.
+   *
+   * @return Reference to the input data.
+   * @throws std::runtime_error if the job is running.
+   */
+  Input & input()
+  {
+    if(running_)
+    {
+      throw std::runtime_error("AsyncJob: cannot get write-access to the input while an async job is running. Please "
+                               "ensure that running() is false before modifying the input in place");
+    }
+    return input_;
+  }
+
   void startAsync()
   {
     auto start_async = mc_rtc::clock::now();
@@ -107,9 +132,12 @@ public:
         [this]()
         {
           running_ = true;
-          return static_cast<Derived *>(this)->computeJob();
+          auto start_compute = mc_rtc::clock::now();
+          auto result = static_cast<Derived *>(this)->computeJob();
+          timers_.dt_compute = mc_rtc::elapsed_ms_count(start_compute);
+          return result;
         });
-    timers.dt_startAsync = mc_rtc::clock::now() - start_async;
+    timers_.dt_startAsync = mc_rtc::elapsed_ms_count(start_async);
   }
 
   bool running() const noexcept
@@ -119,22 +147,33 @@ public:
 
   bool checkResult()
   {
+    auto start_check = mc_rtc::clock::now();
     if(futureResult_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
     {
       lastResult_ = futureResult_.get();
       if(logger_ && !inLogger_)
       {
-        static_cast<Derived *>(this)->addToLoggerImpl();
+        timers_.dt_loggerImpl = mc_rtc::timedExecution([this]() { addToLogger_(); }).count();
         inLogger_ = true;
       }
+      else
+      {
+        timers_.dt_loggerImpl = 0;
+      }
+
       if(gui_ && !inGUI_)
       {
-        static_cast<Derived *>(this)->addToGUIImpl();
+        timers_.dt_guiImpl = mc_rtc::timedExecution([this]() { addToGUI_(); }).count();
         inGUI_ = true;
+      }
+      else
+      {
+        timers_.dt_guiImpl = 0;
       }
       running_ = false;
       return true;
     }
+    timers_.dt_checkResult = mc_rtc::elapsed_ms_count(start_check);
     return false;
   }
 
@@ -179,11 +218,22 @@ protected: // bookkeeping for the async job
   bool inGUI_ = false;
   std::future<Result> futureResult_;
   std::optional<Result> lastResult_;
+  Timers timers_;
+
+  /**
+   * @brief Input data for the asynchronous job.
+   *
+   * This member holds the input required for the job computation.
+   * It can be modified only when the async job is not running (i.e., before calling startAsync() or when running() is
+   * false). Do not modify this while the async job is running. Use the input() accessor to obtain a writable reference,
+   * which throws if the job is running.
+   */
+  Input input_;
 
   // CRTP: derived must implement this
   // Result computeJob();
 
-  // CRTP: derived must implement these
+  // CRTP: derived may implement these
   void addToLoggerImpl() {}
   void addToGUIImpl() {}
 
@@ -192,6 +242,23 @@ protected: // bookkeeping for the async job
   std::string loggerPrefix_ = "";
   mc_rtc::gui::StateBuilder * gui_ = nullptr;
   std::vector<std::string> guiCategory_;
+
+protected:
+  void addToLogger_()
+  {
+    auto contactPrefix = "perf_" + loggerPrefix_ + "_" + input_.contactName + "_";
+    logger_->addLogEntry(contactPrefix + "startAsync [ms]", this, [this]() { return timers_.dt_startAsync; });
+    logger_->addLogEntry(contactPrefix + "checkResult [ms]", this, [this]() { return timers_.dt_checkResult; });
+    logger_->addLogEntry(contactPrefix + "loggerImpl [ms]", this, [this]() { return timers_.dt_loggerImpl; });
+    logger_->addLogEntry(contactPrefix + "guiImpl [ms]", this, [this]() { return timers_.dt_guiImpl; });
+    logger_->addLogEntry(contactPrefix + "async_compute [ms]", this, [this]() { return timers_.dt_compute.load(); });
+    static_cast<Derived *>(this)->addToLoggerImpl();
+  }
+
+  void addToGUI_()
+  {
+    static_cast<Derived *>(this)->addToGUIImpl();
+  }
 };
 
 // Helper alias for CRTP inheritance

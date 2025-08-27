@@ -1,3 +1,4 @@
+#include "mc_dynamic_polytopes/Time.h"
 #include <mc_dynamic_polytopes/DynamicPolytope.h>
 
 namespace mc_dynamic_polytopes
@@ -78,34 +79,33 @@ void DynamicPolytope::computeRegions()
     auto start_constructor = mc_rtc::clock::now();
     auto & job = feasiblePolytopesJobs_[contactName];
     job.load(config_); // XXX should load per-contact config instead of global one
-    auto dt_constructor = mc_rtc::clock::now() - start_constructor;
-    job.contactTimers.dt_constructor = dt_constructor;
+    job.contactTimers.dt_constructor = mc_rtc::elapsed_ms_count(start_constructor);
     job.HrepMode_ = HrepMode_; // XXX
 
     if(!job.running())
     {
-      auto start_copy_input = mc_rtc::clock::now();
-      auto & input = job.input;
-      input.contactName = contactName;
-      input.mb = robot.mb();
-      input.mbc = robot.mbc();
-      input.tl = robot.tl();
-      input.tu = robot.tu();
-      input.surface = robot.surface(contactName).copy();
-      input.surfacePose = input.surface->X_0_s(robot);
-      input.accW = robot.accW();
-      input.refContactTransform = refContactTransforms_.at(contactName);
-      // XXX: this uses the default value anyway
-      // input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName);
-      // input.forceScalingFactor = forceScalingFactors_.at(contactName);
-      input.frictionCoefficient = contactsRBDyn_.at(contactName).friction();
-
-      job.contactTimers.dt_copyInputs = mc_rtc::clock::now() - start_copy_input;
+      job.contactTimers.dt_copyInputs = mc_rtc::timedExecution(
+                                            [&]()
+                                            {
+                                              auto & input = job.input();
+                                              input.contactName = contactName;
+                                              input.mb = robot.mb();
+                                              input.mbc = robot.mbc();
+                                              input.tl = robot.tl();
+                                              input.tu = robot.tu();
+                                              input.surface = robot.surface(contactName).copy();
+                                              input.surfacePose = input.surface->X_0_s(robot);
+                                              input.accW = robot.accW();
+                                              input.refContactTransform = refContactTransforms_.at(contactName);
+                                              // XXX: this uses the default value anyway
+                                              // input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName);
+                                              // input.forceScalingFactor = forceScalingFactors_.at(contactName);
+                                              input.frictionCoefficient = contactsRBDyn_.at(contactName).friction();
+                                            })
+                                            .count();
 
       // Job starts as an async task, use job.checkResult() later to know whether it is finished and retrive its value
-      auto start_async = mc_rtc::clock::now();
       job.startAsync();
-      job.timers.dt_startAsync = mc_rtc::clock::now() - start_async;
       if(logger_)
       {
         job.addToLogger(*logger_, name_);
@@ -129,7 +129,7 @@ void DynamicPolytope::computeRegions()
       updateRBDynPolytopes(result.forcePolyPlanes.first, result.forcePolyPlanes.second, contactsRBDyn_.at(contactName));
     }
   }
-  dt_debug_ = mc_rtc::clock::now() - start_debug;
+  dt_debug_ = mc_rtc::elapsed_ms(start_debug);
 
   // Remove contacts
   for(const auto & removeContact : contactsToRemove_)
@@ -142,12 +142,12 @@ void DynamicPolytope::computeRegions()
   {
     if(!zmpRegionJob_.running())
     {
-      zmpRegionJob_.input.initialize(robot, activeContacts_);
+      zmpRegionJob_.input().initialize(robot, activeContacts_);
       zmpRegionJob_.startAsync();
     }
   }
 
-  dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
+  dt_compute_contactSet_ = mc_rtc::elapsed_ms(start_loop);
 
   // Steps 3-6: launch the rest everytime the previous full region was computed
   // if(computeRegions_) // TODO: restore implementation
@@ -165,7 +165,7 @@ void DynamicPolytope::computeRegions()
   // }
 
   // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updati
-  dt_loop_total_ = mc_rtc::clock::now() - start_loop;
+  dt_loop_total_ = mc_rtc::elapsed_ms(start_loop);
 }
 
 void DynamicPolytope::buildFrictionConeFromContactWithVrep(int numberOfFrictionSides,
@@ -742,11 +742,10 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
 {
   auto prefix = name_;
   logger_ = &logger;
-  logger.addLogEntry("perf_" + prefix + "_totalLoop", this, [this]() { return dt_loop_total_.count(); });
-  logger.addLogEntry("perf_" + prefix + "_startAsync", this, [this]() { return dt_start_async_.count(); });
-  logger.addLogEntry("perf_" + prefix + "_computeContactSet", this,
-                     [this]() { return dt_compute_contactSet_.count(); });
-  logger.addLogEntry("perf_" + prefix + "_dt_debug", this, [this]() { return dt_debug_.count(); });
+  auto pp = "perf_" + prefix + "_";
+  logger.addLogEntry(pp + "totalLoop [ms]", this, [this]() { return dt_loop_total_.count(); });
+  logger.addLogEntry(pp + "computeContactSet [ms]", this, [this]() { return dt_compute_contactSet_.count(); });
+  logger.addLogEntry(pp + "dt_debug [ms]", this, [this]() { return dt_debug_.count(); });
 
   for(auto & [_, job] : feasiblePolytopesJobs_)
   {
