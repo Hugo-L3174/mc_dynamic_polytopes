@@ -140,9 +140,10 @@ void DynamicPolytope::computeRegions()
   // Step 1.2: launch ZMP region calculation at the same time, also independant
   if(computeRegions_)
   {
-    if(!zmpThread_.joinable())
+    if(!zmpRegionJob_.running())
     {
-      zmpThread_ = std::thread(&DynamicPolytope::computeZMPRegion, this, robot_.com());
+      zmpRegionJob_.input.initialize(robot, activeContacts_);
+      zmpRegionJob_.startAsync();
     }
   }
 
@@ -446,64 +447,6 @@ void DynamicPolytope::VRPtranslation(double deltaZ)
   TopGeomTools::translate(CWCForces_, deltaZVector);
   std::lock_guard<std::mutex> lockZeroMoment(zeroMomentMutex_);
   TopGeomTools::translate(zeroMomentRegion_, deltaZVector);
-}
-
-void DynamicPolytope::computeZMPRegion(Eigen::Vector3d comPosition)
-{
-  // XXX dummy zone for now: convex area formed by the polygon envelope of feet + com position
-  int dim = 3;
-  boost::shared_ptr<Polytope_Rn> newZMPPoly(new Polytope_Rn());
-
-  std::vector<double> qhullVect;
-  const std::string contactTest = "LeftFoot";
-  for(const auto & contact : activeContacts_)
-  {
-    // Important ! points for surfaces give the points coordinates from the parent link, not from the
-    // surface origin, so X_b_p and not X_s_p
-    // This means to get world frame surface points X_0_p = X_s_p * X_0_s we need X_s_p
-    // X_s_p = X_b_p * X_s_b = X_b_p * X_b_s.inv()
-    auto cPoints = robot_.surface(contact).points();
-    for(auto cPoint : cPoints)
-    {
-      cPoint = cPoint * robot_.surface(contact).X_b_s().inv() * robot_.surface(contact).X_0_s(robot_);
-      // coords.insert_element(0, cPoint.translation().x());
-      // coords.insert_element(1, cPoint.translation().y());
-      // coords.insert_element(2, cPoint.translation().z());
-      // Testing with triple distance points (they are generators for a polyhedral cone, so they should not be bounded)
-      qhullVect.emplace_back(3 * cPoint.translation().x() - 2 * comPosition.x());
-      qhullVect.emplace_back(3 * cPoint.translation().y() - 2 * comPosition.y());
-      qhullVect.emplace_back(3 * cPoint.translation().z() - 2 * comPosition.z());
-    }
-  }
-
-  // Use this to test only one contact
-  /*
-  auto cPoints = robot_.surface(contactTest).points();
-  for(auto cPoint : cPoints)
-  {
-    cPoint = cPoint * robot_.surface(contactTest).X_b_s().inv() * robot_.surface(contactTest).X_0_s(robot_);
-    boost::shared_ptr<Generator_Rn> gn(new Generator_Rn(dim));
-    boost::numeric::ublas::vector<double> coords(3);
-    coords.insert_element(0, cPoint.translation().x());
-    coords.insert_element(1, cPoint.translation().y());
-    coords.insert_element(2, cPoint.translation().z());
-    gn->setCoordinates(coords);
-    newZMPPoly->addGenerator(gn);
-  }
-  */
-
-  qhullVect.emplace_back(comPosition.x());
-  qhullVect.emplace_back(comPosition.y());
-  qhullVect.emplace_back(comPosition.z());
-
-  computeQhullHrep(qhullVect, newZMPPoly, dim);
-
-  politopixAPI::computeDoubleDescriptionWithoutCheck(newZMPPoly, 3000);
-
-  checkAllHSInternal("ZMP", newZMPPoly);
-
-  std::lock_guard<std::mutex> lock(ZMPMutex_);
-  zmpRegion_ = newZMPPoly;
 }
 
 void DynamicPolytope::computeZeroMomentIntersection()

@@ -1,9 +1,7 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
-#include <future>
 #include <mutex>
 #include <politopix/Voronoi_Rn.h>
 #include <thread>
@@ -19,6 +17,7 @@
 #include <Tasks/QPContacts.h>
 
 #include <mc_dynamic_polytopes/ContactPolytope.h>
+#include <mc_dynamic_polytopes/ZMPRegion.h>
 #include <politopix/PolyhedralAlgorithms_Rn.h>
 #include <politopix/PrismaticPolyhedron_Rn.h>
 #include <politopix/politopixAPI.h>
@@ -39,10 +38,6 @@ struct DynamicPolytope
   inline void stopThread()
   {
     computing_ = false;
-    if(zmpThread_.joinable())
-    {
-      zmpThread_.join();
-    }
     if(minkSumThread_.joinable())
     {
       minkSumThread_.join();
@@ -222,7 +217,7 @@ protected:
   /* Computes the 3d volume formed between the possible ZMP area(s) and the CoM of the robot
   TODO this is potentially several convex areas! (caron tro) see how to handle this
   */
-  void computeZMPRegion(Eigen::Vector3d comPosition);
+  boost::shared_ptr<Polytope_Rn> computeZMPRegion(Eigen::Vector3d comPosition);
 
   // Creates a 6d contact friction cone from the contact surface border points
   // The generators are computed then used to build the Polytope_Rn object which is added to the cones vector
@@ -357,7 +352,7 @@ protected:
   // condition variable to signal start of loop for main thread
   std::condition_variable cv_;
   std::mutex contactSetMutex_;
-  std::thread zmpThread_;
+  ZMPRegionJob zmpRegionJob_;
   std::thread minkSumThread_;
   std::atomic<bool> VRPRegionComputed_{true};
   std::mutex VRPPlanesMutex_;
