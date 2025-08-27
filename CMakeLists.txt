@@ -45,6 +45,7 @@ add_library(DynamicPolytope SHARED
   ${PROJECT_SOURCE_DIR}/src/WrenchCones.cpp
   ${PROJECT_SOURCE_DIR}/src/GUIComputations.cpp
   ${PROJECT_SOURCE_DIR}/src/DynamicPolytope.cpp
+  ${PROJECT_SOURCE_DIR}/src/ContactPolytope.cpp
 )
 
 target_include_directories(DynamicPolytope
@@ -74,6 +75,6 @@ install(
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-install(DIRECTORY include/
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mc_dynamic_polytopes
+install(DIRECTORY include/mc_dynamic_polytopes
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )

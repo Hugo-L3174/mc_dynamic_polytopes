@@ -1,4 +1,7 @@
-#include "WrenchCones.h"
+#include <mc_dynamic_polytopes/WrenchCones.h>
+
+namespace mc_dynamic_polytopes
+{
 
 // Julien's method, not convinced
 Eigen::MatrixXd linearizedFrictionCone(int numberOfFrictionSides, Eigen::Matrix3d m_rotation, double m_frictionCoef)
@@ -208,3 +211,5 @@ void findHalfWidthLength(const mc_rbdyn::Surface & surface, double & halfWidth, 
   halfLength = (maxSagital - minSagital) / 2.;
   halfWidth = (maxLateral - minLateral) / 2.;
 }
+
+} // namespace mc_dynamic_polytopes

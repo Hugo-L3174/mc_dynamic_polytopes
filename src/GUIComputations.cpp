@@ -1,4 +1,7 @@
-#include "GUIComputations.h"
+#include <mc_dynamic_polytopes/GUIComputations.h>
+
+namespace mc_dynamic_polytopes
+{
 
 void sortFaceVertices(std::vector<Eigen::Vector3d> & vertices, Eigen::Vector3d faceNormal)
 {
@@ -298,3 +301,5 @@ void update6DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     }
   }
 }
+
+} // namespace mc_dynamic_polytopes
