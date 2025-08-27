@@ -314,8 +314,8 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
 //                                                        int numberOfFrictionSides,
 //                                                        double forceScalingFactor,
 //                                                        double frictionCoeff,
-//                                                        ContactTimers & timers)
-ContactPolytopeResult ContactPolytopeJob::computePolytopeJob()
+//                                                        ContactcontactTimers & contactTimers)
+ContactPolytopeResult ContactPolytopeJob::computeJob()
 {
   auto start_job = mc_rtc::clock::now();
   ContactPolytopeResult result;
@@ -333,11 +333,11 @@ ContactPolytopeResult ContactPolytopeJob::computePolytopeJob()
 
   // update the correct force polytope in the map
   buildActuationPolytopeFromContact(input, actuationPolytope, forceScalingFactor, dim);
-  timers.dt_forcePolytope = mc_rtc::clock::now() - start_forcePoly;
+  contactTimers.dt_forcePolytope = mc_rtc::clock::now() - start_forcePoly;
 
   auto start_frictionCone = mc_rtc::clock::now();
   buildFrictionConeFromContactWithHrep(numberOfFrictionSides, X_r1_r2, frictionCone, frictionCoeff, dim);
-  timers.dt_frictionCone = mc_rtc::clock::now() - start_frictionCone;
+  contactTimers.dt_frictionCone = mc_rtc::clock::now() - start_frictionCone;
 
   auto start_intersection = mc_rtc::clock::now();
   // Compute intersection
@@ -386,15 +386,15 @@ ContactPolytopeResult ContactPolytopeJob::computePolytopeJob()
   // mc_rtc::log::info("Force poly {} after intersection: {} hs and {} gens", contactName,
   //                   forcePolytopes_.at(contactName)->numberOfHalfSpaces(),
   //                   forcePolytopes_.at(contactName)->numberOfGenerators());
-  timers.dt_intersection = mc_rtc::clock::now() - start_intersection;
-  timers.dt_contactTotal = mc_rtc::clock::now() - start_forcePoly;
+  contactTimers.dt_intersection = mc_rtc::clock::now() - start_intersection;
+  contactTimers.dt_contactTotal = mc_rtc::clock::now() - start_forcePoly;
 
   updatePlanesMatrixConstraint(result.frictionCone, result.frictionConesPlanes.first,
                                result.frictionConesPlanes.second);
   updatePlanesMatrixConstraint(result.actuationPolytope, result.forcePolyPlanes.first, result.forcePolyPlanes.second);
 
   result.updateTrianglesGUIPolytopix(guiScale_, input.surfacePose);
-  timers.dt_total_job = mc_rtc::clock::now() - start_job;
+  contactTimers.dt_total_job = mc_rtc::clock::now() - start_job;
   return result;
 }
 } // namespace mc_dynamic_polytopes

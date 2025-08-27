@@ -79,7 +79,7 @@ void DynamicPolytope::computeRegions()
     auto & job = feasiblePolytopesJobs_[contactName];
     job.load(config_); // XXX should load per-contact config instead of global one
     auto dt_constructor = mc_rtc::clock::now() - start_constructor;
-    job.timers.dt_constructor = dt_constructor;
+    job.contactTimers.dt_constructor = dt_constructor;
     job.HrepMode_ = HrepMode_; // XXX
 
     if(!job.running())
@@ -100,7 +100,7 @@ void DynamicPolytope::computeRegions()
       // input.forceScalingFactor = forceScalingFactors_.at(contactName);
       input.frictionCoefficient = contactsRBDyn_.at(contactName).friction();
 
-      job.timers.dt_copyInputs = mc_rtc::clock::now() - start_copy_input;
+      job.contactTimers.dt_copyInputs = mc_rtc::clock::now() - start_copy_input;
 
       // Job starts as an async task, use job.checkResult() later to know whether it is finished and retrive its value
       auto start_async = mc_rtc::clock::now();

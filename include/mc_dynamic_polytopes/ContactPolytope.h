@@ -1,4 +1,5 @@
 #pragma once
+#include <mc_dynamic_polytopes/AsyncJob.h>
 
 #include <chrono>
 #include <future>
@@ -110,124 +111,57 @@ struct ContactPolytopeInput
   double frictionCoefficient = defaultFrictionCoeff;
 };
 
-struct ContactPolytopeJob
+struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolytopeInput, ContactPolytopeResult>
 {
-  ~ContactPolytopeJob()
-  {
-    removeFromLogger();
-    removeFromGUI();
-  }
-
-  ContactPolytopeInput input;
-  ContactTimers timers;
-
-  // XXX: what to do about these options?
   // Options for easier display of the computation steps
-  // TODO: turn into a schema
   bool combineWithFriction_ = true;
   bool DDfrictionCones_ = false;
   bool HrepMode_ = false;
   double guiScale_ = 0.001;
 
-  /**
-   * Starts the async job defined in \ref computePolytopeJob()
-   * One must set the input before this
-   */
-  void startAsync()
-  {
-    auto start_async = mc_rtc::clock::now();
-    running_ = true;
-    futurePolytope = std::async(std::bind(&ContactPolytopeJob::computePolytopeJob, this));
-    timers.dt_startAsync = mc_rtc::clock::now() - start_async;
-  }
+  // Polyhedron configs
+  mc_rtc::gui::PolyhedronConfig polyForceConfig_;
+  mc_rtc::gui::PolyhedronConfig polyMomentConfig_;
 
-  /**
-   * Checks whether the async task has been started
-   */
-  bool running() const noexcept
-  {
-    return running_;
-  }
+  // Additional timers for polytope computation steps
+  ContactTimers contactTimers;
 
-  /**
-   * Checks whether the job has completed and stores it to lastResult_
-   *
-   * \returns true when the result has been computed, false otherwise
-   */
-  bool checkResult()
-  {
-    if(futurePolytope.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-    {
-      lastResult_ = futurePolytope.get();
-      if(logger_ && !inLogger_)
-      {
-        addToLogger_();
-        inLogger_ = true;
-      }
-      if(gui_ && !inGUI_)
-      {
-        addToGUI_();
-        inGUI_ = true;
-      }
-      running_ = false;
-      return true;
-    }
-    return false;
-  }
+  // Actual computation
+  void buildActuationPolytopeFromContact(const ContactPolytopeInput & input,
+                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
+                                         double forceScalingFactor,
+                                         unsigned int dim);
 
-  /**
-   * Get the last result
-   */
-  const std::optional<ContactPolytopeResult> & lastResult() const noexcept
-  {
-    return lastResult_;
-  }
+  // CRTP actual computation
+  ContactPolytopeResult computeJob();
 
-  /**
-   * Add job related information to the logger
-   * This is defered until:
-   * - addToLogger has been called
-   * - the first async job has been completed
-   */
-  void addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
+  // CRTP: deferred logger implementation
+  void addToLoggerImpl()
   {
-    if(logger_) return;
-    logger_ = &logger;
     auto contact = input.contactName;
-    auto contactPrefix = "perf_" + prefix + "_" + contact + "_";
-    addToLogger_ = [this, &logger, contactPrefix]()
-    {
-      logger.addLogEntry(contactPrefix + "frictionCone", this, [this]() { return timers.dt_frictionCone.count(); });
-      logger.addLogEntry(contactPrefix + "forcePolytope", this, [this]() { return timers.dt_forcePolytope.count(); });
-      logger.addLogEntry(contactPrefix + "intersection", this, [this]() { return timers.dt_intersection.count(); });
-      logger.addLogEntry(contactPrefix + "Total", this, [this]() { return timers.dt_contactTotal.count(); });
-      logger.addLogEntry(contactPrefix + "startAsync", this, [this]() { return timers.dt_startAsync.count(); });
-      logger.addLogEntry(contactPrefix + "copyInputs", this, [this]() { return timers.dt_copyInputs.count(); });
-      logger.addLogEntry(contactPrefix + "constructor", this, [this]() { return timers.dt_constructor.count(); });
-      logger.addLogEntry(contactPrefix + "totalJob", this, [this]() { return timers.dt_total_job.count(); });
-    };
+    auto contactPrefix = "perf_" + loggerPrefix_ + "_" + contact + "_";
+    logger_->addLogEntry(contactPrefix + "frictionCone", this,
+                         [this]() { return contactTimers.dt_frictionCone.count(); });
+    logger_->addLogEntry(contactPrefix + "forcePolytope", this,
+                         [this]() { return contactTimers.dt_forcePolytope.count(); });
+    logger_->addLogEntry(contactPrefix + "intersection", this,
+                         [this]() { return contactTimers.dt_intersection.count(); });
+    logger_->addLogEntry(contactPrefix + "Total", this, [this]() { return contactTimers.dt_contactTotal.count(); });
+    logger_->addLogEntry(contactPrefix + "startAsync", this, [this]() { return contactTimers.dt_startAsync.count(); });
+    logger_->addLogEntry(contactPrefix + "totalJob", this, [this]() { return contactTimers.dt_total_job.count(); });
   }
 
-  /**
-   * Add job related information to the GUI
-   * This is defered until:
-   * - addToGUI has been called
-   * - the first async job has been completed
-   */
-  void addToGUI(mc_rtc::gui::StateBuilder & gui, const std::vector<std::string> & category)
+  // CRTP: deferred GUI implementation
+  void addToGUIImpl()
   {
-    if(gui_) return;
-    gui_ = &gui;
-    addToGUI_ = [this, &gui, category]()
-    {
-      const auto & result = *lastResult_;
-      auto coeffsCat = category;
-      auto contactsCat = category;
-      contactsCat.push_back("Contact Polytopes");
-      auto contact = input.contactName;
-      using namespace mc_rtc::gui;
+    const auto & result = *lastResult_;
+    auto coeffsCat = guiCategory_;
+    auto contactsCat = guiCategory_;
+    contactsCat.push_back("Contact Polytopes");
+    auto contact = input.contactName;
+    using namespace mc_rtc::gui;
 
-      gui.addElement(this, contactsCat,
+    gui_->addElement(this, contactsCat,
                      Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
                                 [&result]() { return result.frictionConeTriangles; }),
                      Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
@@ -235,42 +169,19 @@ struct ContactPolytopeJob
                      Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
                                 [&result]() { return result.momentPolytopesTriangles; }));
 
-      gui.addElement(
-          this, coeffsCat,
-          NumberSlider(
-              fmt::format(contact + " force alpha [0.001-1]"), [this, contact]() { return input.forceScalingFactor; },
-              // scale min at 0.001 instead of 0 to avoid handling zero polytope
-              [this, contact](double scale) { input.forceScalingFactor = scale; }, 0.001, 1.0),
-          // FIXME: friction coefficient is set from RBDyn contact which overrides this input. Do we need to have the
-          // friciton configurable independently from the contact? NumberInput(
-          //     fmt::format(contact + " friction coefficient"),
-          //     [this, contact]() { return input.frictionCoefficient; },
-          //     [this, contact](double frictionCoeff) { input.frictionCoefficient = frictionCoeff; }),
-          IntegerInput(
-              fmt::format(contact + " number of friction sides"), [this]() { return input.numberOfFrictionSides; },
-              [this](int nbFrictionSides) { input.numberOfFrictionSides = nbFrictionSides; }));
-    };
-  }
-
-  void removeFromLogger()
-  {
-    if(logger_)
-    {
-      logger_->removeLogEntries(this);
-    }
-  }
-
-  void removeFromGUI()
-  {
-    if(gui_)
-    {
-      gui_->removeElements(this);
-    }
+    gui_->addElement(
+        this, coeffsCat,
+        NumberSlider(
+            fmt::format(contact + " force alpha [0.001-1]"), [this, contact]() { return input.forceScalingFactor; },
+            [this, contact](double scale) { input.forceScalingFactor = scale; }, 0.001, 1.0),
+        IntegerInput(
+            fmt::format(contact + " number of friction sides"), [this]() { return input.numberOfFrictionSides; },
+            [this](int nbFrictionSides) { input.numberOfFrictionSides = nbFrictionSides; }));
   }
 
   void load(const mc_rtc::Configuration & config)
   {
-    // XXX: simplify with schema
+    // FIXME: bug in mc_rtc
     config("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
     config("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
     config("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
@@ -293,33 +204,6 @@ struct ContactPolytopeJob
     config("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
     config("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
   }
-
-protected: // bookeeping for the async job
-  bool running_ = false;
-  bool inLogger_ = false;
-  bool inGUI_ = false;
-  std::future<ContactPolytopeResult> futurePolytope;
-  std::optional<ContactPolytopeResult> lastResult_;
-  ContactPolytopeResult computePolytopeJob();
-
-protected: // deferred loggin/GUI calls
-  mc_rtc::Logger * logger_ = nullptr;
-  std::function<void()>
-      addToLogger_; ///< Actual logging implementation to be called after the first result is available
-
-  mc_rtc::gui::StateBuilder * gui_ = nullptr;
-  std::function<void()> addToGUI_; ///< Actual gui implementation to be called after the first result is available
-  mc_rtc::gui::PolyhedronConfig polyForceConfig_;
-  mc_rtc::gui::PolyhedronConfig polyMomentConfig_;
-
-  // actual computation
-protected:
-  // compute the force polytope of the contact from the wrench limits of the limb actuating it
-  // now also taking a scale factor (0-1) for force
-  void buildActuationPolytopeFromContact(const ContactPolytopeInput & input,
-                                         boost::shared_ptr<Polytope_Rn> & actuationPolytope,
-                                         double forceScalingFactor,
-                                         unsigned int dim);
 };
 
 } // namespace mc_dynamic_polytopes

@@ -4,13 +4,6 @@
 namespace mc_dynamic_polytopes
 {
 
-ZMPRegionResult ZMPRegionJob::computeZMPRegionJob()
-{
-  ZMPRegionResult result;
-  result.zmpRegion = computeZMPRegion(input.comPosition.translation());
-  return result;
-}
-
 boost::shared_ptr<Polytope_Rn> ZMPRegionJob::computeZMPRegion(Eigen::Vector3d comPosition)
 {
   // XXX dummy zone for now: convex area formed by the polygon envelope of feet + com position

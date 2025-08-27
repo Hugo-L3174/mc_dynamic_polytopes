@@ -1,8 +1,7 @@
 #pragma once
 #include <mc_rbdyn/Robot.h>
 #include <SpaceVecAlg/SpaceVecAlg>
-#include <future>
-#include <optional>
+#include <mc_dynamic_polytopes/AsyncJob.h>
 #include <politopix/politopixAPI.h>
 
 namespace mc_dynamic_polytopes
@@ -39,7 +38,7 @@ struct ZMPRegionInput
     }
   }
 
-  sva::PTransformd comPosition;
+  Eigen::Vector3d comPosition;
   std::vector<ZMPRegionContactInput> contactInputs;
 };
 
@@ -48,47 +47,21 @@ struct ZMPRegionResult
   boost::shared_ptr<Polytope_Rn> zmpRegion;
 };
 
-struct ZMPRegionJob
+struct ZMPRegionJob : MakeAsyncJob<ZMPRegionJob, ZMPRegionInput, ZMPRegionResult>
 {
-  ZMPRegionInput input;
-
-  void startAsync()
+  // Implements the required CRTP method
+  ZMPRegionResult computeJob()
   {
-    futureZMPRegion_ = std::async(std::bind(&ZMPRegionJob::computeZMPRegionJob, this));
-    running_ = true;
+    ZMPRegionResult result;
+    result.zmpRegion = computeZMPRegion(input.comPosition);
+    return result;
   }
 
-  bool checkResult()
-  {
-    if(futureZMPRegion_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-    {
-      lastResult_ = futureZMPRegion_.get();
-      running_ = false;
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Get the last result if available
-   */
-  const std::optional<ZMPRegionResult> & lastResult() const noexcept
-  {
-    return lastResult_;
-  }
-
-  inline bool running() const noexcept
-  {
-    return running_;
-  }
+  // Optionally implement logger/GUI integration
+  void addToLoggerImpl() {}
+  void addToGUIImpl() {}
 
 protected:
-  bool running_ = false;
-  std::future<ZMPRegionResult> futureZMPRegion_;
-  std::optional<ZMPRegionResult> lastResult_;
-  ZMPRegionResult computeZMPRegionJob();
-
-protected: // actual computation
   boost::shared_ptr<Polytope_Rn> computeZMPRegion(Eigen::Vector3d comPosition);
 };
 
