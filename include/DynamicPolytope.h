@@ -132,6 +132,7 @@ struct ContactPolytopeJob
   ~ContactPolytopeJob()
   {
     removeFromLogger();
+    removeFromGUI();
   }
 
   ContactPolytopeInput input;
@@ -174,8 +175,17 @@ struct ContactPolytopeJob
   {
     if(futurePolytope.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
     {
-      mc_rtc::log::info("Got result for contact {}", input.contactName);
       lastResult_ = futurePolytope.get();
+      if(logger_ && !inLogger_)
+      {
+        addToLogger_();
+        inLogger_ = true;
+      }
+      if(gui_ && !inGUI_)
+      {
+        addToGUI_();
+        inGUI_ = true;
+      }
       running_ = false;
       return true;
     }
@@ -191,27 +201,57 @@ struct ContactPolytopeJob
     return lastResult_;
   }
 
+  /**
+   * Add job related information to the logger
+   * This is defered until:
+   * - addToLogger has been called
+   * - the first async job has been completed
+   */
   void addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
   {
     if(logger_) return;
     logger_ = &logger;
     auto contact = input.contactName;
-    logger.addLogEntry("perf_" + prefix + "_" + contact + "_frictionCone", this,
-                       [this]() { return timers.dt_frictionCone.count(); });
-    logger.addLogEntry("perf_" + prefix + "_" + contact + "_forcePolytope", this,
-                       [this]() { return timers.dt_forcePolytope.count(); });
-    logger.addLogEntry("perf_" + prefix + "_" + contact + "_intersection", this,
-                       [this, contact]() { return timers.dt_intersection.count(); });
-    logger.addLogEntry("perf_" + prefix + "_" + contact + "_Total", this,
-                       [this]() { return timers.dt_contactTotal.count(); });
-    logger.addLogEntry("perf_" + prefix + "_" + contact + "_startAsync", this,
-                       [this]() { return timers.dt_startAsync.count(); });
-    logger.addLogEntry("perf_" + prefix + "_" + contact + "_copyInputs", this,
-                       [this]() { return timers.dt_copyInputs.count(); });
-    logger.addLogEntry("perf_" + prefix + "_" + contact + "_constructor", this,
-                       [this]() { return timers.dt_constructor.count(); });
-    logger.addLogEntry("perf_" + prefix + "_" + contact + "_totalJob", this,
-                       [this]() { return timers.dt_total_job.count(); });
+    auto contactPrefix = "perf_" + prefix + "_" + contact + "_";
+    addToLogger_ = [this, &logger, contactPrefix]()
+    {
+      logger.addLogEntry(contactPrefix + "frictionCone", this, [this]() { return timers.dt_frictionCone.count(); });
+      logger.addLogEntry(contactPrefix + "forcePolytope", this, [this]() { return timers.dt_forcePolytope.count(); });
+      logger.addLogEntry(contactPrefix + "intersection", this, [this]() { return timers.dt_intersection.count(); });
+      logger.addLogEntry(contactPrefix + "Total", this, [this]() { return timers.dt_contactTotal.count(); });
+      logger.addLogEntry(contactPrefix + "startAsync", this, [this]() { return timers.dt_startAsync.count(); });
+      logger.addLogEntry(contactPrefix + "copyInputs", this, [this]() { return timers.dt_copyInputs.count(); });
+      logger.addLogEntry(contactPrefix + "constructor", this, [this]() { return timers.dt_constructor.count(); });
+      logger.addLogEntry(contactPrefix + "totalJob", this, [this]() { return timers.dt_total_job.count(); });
+    };
+  }
+
+  /**
+   * Add job related information to the GUI
+   * This is defered until:
+   * - addToGUI has been called
+   * - the first async job has been completed
+   */
+  void addToGUI(mc_rtc::gui::StateBuilder & gui, const std::vector<std::string> & category)
+  {
+    if(gui_) return;
+    gui_ = &gui;
+    addToGUI_ = [this, &gui, category]()
+    {
+      const auto & result = *lastResult_;
+      auto coeffsCat = category;
+      auto contactsCat = category;
+      contactsCat.push_back("Contact Polytopes");
+      auto contact = input.contactName;
+
+      gui.addElement(this, contactsCat,
+                     mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
+                                             [&result]() { return result.frictionConeTriangles; }),
+                     mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
+                                             [&result]() { return result.forcePolyTriangles; }),
+                     mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
+                                             [&result]() { return result.momentPolytopesTriangles; }));
+    };
   }
 
   void removeFromLogger()
@@ -222,12 +262,57 @@ struct ContactPolytopeJob
     }
   }
 
+  void removeFromGUI()
+  {
+    if(gui_)
+    {
+      gui_->removeElements(this);
+    }
+  }
+
+  void load(const mc_rtc::Configuration & config)
+  {
+    // XXX: simplify with schema
+    config("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
+    config("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
+    config("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
+    config("gui")("polyhedronForce")("edges", polyForceConfig_.edge_config);
+    config("gui")("polyhedronForce")("show_edges", polyForceConfig_.show_edges);
+    config("gui")("polyhedronForce")("fixed_edge_color", polyForceConfig_.fixed_edge_color);
+    config("gui")("polyhedronForce")("vertices")("color", polyForceConfig_.vertices_config.color);
+    config("gui")("polyhedronForce")("vertices")("scale", polyForceConfig_.vertices_config.scale);
+    config("gui")("polyhedronForce")("show_vertices", polyForceConfig_.show_vertices);
+    config("gui")("polyhedronForce")("fixed_vertices_color", polyForceConfig_.fixed_vertices_color);
+
+    config("gui")("polyhedronMoment")("triangle_color", polyMomentConfig_.triangle_color);
+    config("gui")("polyhedronMoment")("show_triangle", polyMomentConfig_.show_triangle);
+    config("gui")("polyhedronMoment")("use_triangle_color", polyMomentConfig_.use_triangle_color);
+    config("gui")("polyhedronMoment")("edges", polyMomentConfig_.edge_config);
+    config("gui")("polyhedronMoment")("show_edges", polyMomentConfig_.show_edges);
+    config("gui")("polyhedronMoment")("fixed_edge_color", polyMomentConfig_.fixed_edge_color);
+    config("gui")("polyhedronMoment")("vertices")("color", polyMomentConfig_.vertices_config.color);
+    config("gui")("polyhedronMoment")("vertices")("scale", polyMomentConfig_.vertices_config.scale);
+    config("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
+    config("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
+  }
+
 protected: // bookeeping for the async job
   bool running_ = false;
+  bool inLogger_ = false;
+  bool inGUI_ = false;
   std::future<ContactPolytopeResult> futurePolytope;
   std::optional<ContactPolytopeResult> lastResult_;
   ContactPolytopeResult computePolytopeJob();
+
+protected: // deferred loggin/GUI calls
   mc_rtc::Logger * logger_ = nullptr;
+  std::function<void()>
+      addToLogger_; ///< Actual logging implementation to be called after the first result is available
+
+  mc_rtc::gui::StateBuilder * gui_ = nullptr;
+  std::function<void()> addToGUI_; ///< Actual gui implementation to be called after the first result is available
+  mc_rtc::gui::PolyhedronConfig polyForceConfig_;
+  mc_rtc::gui::PolyhedronConfig polyMomentConfig_;
 
   // actual computation
 protected:
@@ -327,8 +412,6 @@ struct DynamicPolytope
 
   // ------------------------------------------------------> mc_rtc interface functions
 
-  std::vector<std::string> guiCategory_ = {"DynamicPolytopes"};
-
   void addToGUI(mc_rtc::gui::StateBuilder * gui);
   void addToLogger(mc_rtc::Logger & logger);
   void removeFromLogger(mc_rtc::Logger & logger);
@@ -424,9 +507,6 @@ struct DynamicPolytope
   // Eigen::Vector3d projectPointInZeroMomentRegion(Eigen::Vector3d testedPoint);
 
 protected:
-  void updateGUI();
-  void updateLogger();
-
   // Updates the internal maps of triangles of the contacts for gui display
   void updateTrianglesContactsGUIPolitopix();
 
@@ -508,8 +588,6 @@ protected:
       // every active contact does not need to be removed
       contactsToRemove_.erase(contact.first);
     }
-
-    contactsUpdated_ = activeContacts_ != previousActiveContacts || !contactsToRemove_.empty();
   }
 
   // Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
@@ -603,6 +681,7 @@ protected:
   // ------------------------------------------------------> Internal variables
 
   std::string name_;
+  std::vector<std::string> guiCategory_ = {"DynamicPolytopes"};
   const mc_rbdyn::Robot & robot_;
   mc_rtc::gui::StateBuilder * gui_ = nullptr;
   mc_rtc::Logger * logger_ = nullptr;

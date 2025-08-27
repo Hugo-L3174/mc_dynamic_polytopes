@@ -3,7 +3,8 @@
 DynamicPolytope::DynamicPolytope(const std::string & name,
                                  const mc_rbdyn::Robot & robot,
                                  const mc_rtc::Configuration & dynamicPolyConfig)
-: name_(fmt::format("DynamicPolytope_" + name)), robot_(robot), config_(dynamicPolyConfig)
+: name_(fmt::format("DynamicPolytope_" + name)), guiCategory_({"DynamicPolytopes", name}), robot_(robot),
+  config_(dynamicPolyConfig)
 {
   possibleContacts_ = dynamicPolyConfig("possibleContacts", std::set<std::string>{"LeftFoot", "RightFoot"});
   withMoments_ = dynamicPolyConfig("withMoments", false);
@@ -77,6 +78,7 @@ void DynamicPolytope::computeRegions()
     // and replace this call
     auto start_constructor = mc_rtc::clock::now();
     auto & job = feasiblePolytopesJobs_[contactName];
+    job.load(config_); // XXX should load per-contact config instead of global one
     auto dt_constructor = mc_rtc::clock::now() - start_constructor;
     job.timers.dt_constructor = dt_constructor;
     job.HrepMode_ = HrepMode_; // XXX
@@ -103,20 +105,26 @@ void DynamicPolytope::computeRegions()
       auto start_async = mc_rtc::clock::now();
       job.startAsync();
       job.timers.dt_startAsync = mc_rtc::clock::now() - start_async;
+      if(logger_)
+      {
+        job.addToLogger(*logger_, name_);
+      }
+      if(gui_)
+      {
+        job.addToGUI(*gui_, guiCategory_);
+      }
     }
   }
 
   // Step 2: wait for finished individual feasible regions
   // Wait for finished threads and join them, then update their matrix constraints
-  // FIXME: very costly ~1.5ms
   auto start_debug = mc_rtc::clock::now();
   for(const auto & contactName : activeContacts_)
   {
-    mc_rtc::log::info("Active Contact: {}", contactName);
     auto & job = feasiblePolytopesJobs_[contactName];
     if(job.checkResult())
     {
-      auto result = *job.lastResult();
+      const auto & result = *job.lastResult();
       updateRBDynPolytopes(result.forcePolyPlanes.first, result.forcePolyPlanes.second, contactsRBDyn_.at(contactName));
     }
   }
@@ -139,16 +147,6 @@ void DynamicPolytope::computeRegions()
 
   dt_compute_contactSet_ = mc_rtc::clock::now() - start_loop;
 
-  // Update contacts GUI
-  if(contactsUpdated_)
-  {
-    // FIXME: wrong, we need to wait until we have a result for the contact to do that
-    updateGUI();
-    // XXX: we do not wait for the contact but it's okish as nothing depends on the result for now
-    updateLogger();
-    contactsUpdated_ = false;
-  }
-
   // Steps 3-6: launch the rest everytime the previous full region was computed
   // if(computeRegions_) // TODO: restore implementation
   // {
@@ -163,7 +161,6 @@ void DynamicPolytope::computeRegions()
   //     minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
   //   }
   // }
-  updateGUI(); // FIXME: inefficient to do it all the time
 
   // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updati
   dt_loop_total_ = mc_rtc::clock::now() - start_loop;
@@ -1366,7 +1363,10 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
   logger.addLogEntry("perf_" + prefix + "_computeContactSet", this, [this]() { return dt_contactSet().count(); });
   logger.addLogEntry("perf_" + prefix + "_dt_debug", this, [this]() { return dt_debug_.count(); });
 
-  updateLogger();
+  for(auto & [_, job] : feasiblePolytopesJobs_)
+  {
+    job.addToLogger(*logger_, name_);
+  }
 
   // logger.addLogEntry("perf_" + prefix + name_ + "_minkSum", this, [this]() { return dt_minkSum().count(); });
   // logger.addLogEntry("perf_" + prefix + name_ + "_updatePlanes", this, [this]() { return dt_updatePlanes().count();
@@ -1389,27 +1389,13 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
   // }
 }
 
-void DynamicPolytope::updateLogger()
+void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)
 {
-  for(auto & [_, job] : feasiblePolytopesJobs_)
-  {
-    const auto & result = job.lastResult();
-    job.addToLogger(*logger_, name_);
-  }
-}
+  gui_ = guiPtr;
 
-void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * gui)
-{
-  gui_ = gui;
-  updateGUI();
-}
-
-// TODO: restore gui
-void DynamicPolytope::updateGUI()
-{
-  auto category = guiCategory_;
   auto & gui = *gui_;
   gui.removeCategory(guiCategory_);
+  auto category = guiCategory_;
 
   // XXX: simplify this
   config_("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
@@ -1456,7 +1442,6 @@ void DynamicPolytope::updateGUI()
   config_("gui")("polyhedronZeroMomentArea")("show_vertices", polyZeroMomentAreaConfig_.show_vertices);
   config_("gui")("polyhedronZeroMomentArea")("fixed_vertices_color", polyZeroMomentAreaConfig_.fixed_vertices_color);
 
-  category.push_back(name_);
   auto coeffsCat = category;
   auto contactsCat = category;
   contactsCat.push_back("Contact Polytopes");
@@ -1465,11 +1450,10 @@ void DynamicPolytope::updateGUI()
 
   for(const auto & contact : activeContacts_)
   {
-    const auto & job = feasiblePolytopesJobs_.at(contact);
-    const auto & resultOpt = job.lastResult();
-    if(!resultOpt) continue;
-    const auto & result = *resultOpt;
+    auto & job = feasiblePolytopesJobs_[contact];
+    job.addToGUI(gui, category);
 
+    // TODO: move to ContactPolytopes job
     gui.addElement(this, coeffsCat,
                    mc_rtc::gui::NumberSlider(
                        fmt::format(contact + " force alpha [0.001-1]"),
@@ -1484,14 +1468,6 @@ void DynamicPolytope::updateGUI()
                        fmt::format(contact + " number of friction sides"),
                        [this, contact]() { return getNbOfFrictionSides(contact); },
                        [this, contact](int nbFrictionSides) { getNbOfFrictionSides(contact) = nbFrictionSides; }));
-
-    gui.addElement(this, contactsCat,
-                   mc_rtc::gui::Polyhedron(fmt::format(contact + " frictions"), polyForceConfig_,
-                                           [&result]() { return result.frictionConeTriangles; }),
-                   mc_rtc::gui::Polyhedron(fmt::format(contact + " forces"), polyMomentConfig_,
-                                           [&result]() { return result.forcePolyTriangles; }),
-                   mc_rtc::gui::Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
-                                           [&result]() { return result.momentPolytopesTriangles; }));
   }
 
   gui.addElement(
