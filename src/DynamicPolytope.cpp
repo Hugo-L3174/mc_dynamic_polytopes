@@ -10,7 +10,6 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 : name_(fmt::format("DynamicPolytope_" + name)), guiCategory_({"DynamicPolytopes", name}), robot_(robot),
   config_(dynamicPolyConfig)
 {
-  possibleContacts_ = dynamicPolyConfig("possibleContacts", std::set<std::string>{"LeftFoot", "RightFoot"});
   withMoments_ = dynamicPolyConfig("withMoments", false);
   computeRegions_ = dynamicPolyConfig("computeRegions", true);
   HrepMode_ = dynamicPolyConfig("HrepMode", false);
@@ -56,7 +55,10 @@ void DynamicPolytope::computeRegions()
     auto start_constructor = mc_rtc::clock::now();
     auto & job = feasiblePolytopesJobs_[contactName];
     job.contactRBDyn_ = &contactsRBDyn_.at(contactName);
-    job.load(config_); // XXX should load per-contact config instead of global one
+    if(!job.startedOnce())
+    {
+      job.load(config_("gui", mc_rtc::Configuration{})); // XXX should load per-contact config instead of global one
+    }
     job.contactTimers.dt_constructor = mc_rtc::elapsed_ms_count(start_constructor);
     job.HrepMode_ = HrepMode_; // XXX
 
@@ -155,7 +157,10 @@ void DynamicPolytope::computeRegions()
 
     if(allContactsReady && zmpReady && !VRPRegionMinkSumJob_.running())
     {
-      VRPRegionMinkSumJob_.load(config_);
+      if(!VRPRegionMinkSumJob_.startedOnce())
+      {
+        VRPRegionMinkSumJob_.load(config_("gui", mc_rtc::Configuration{}));
+      }
       auto & input = VRPRegionMinkSumJob_.input();
       input.initialize_robot(robot_);
       input.contactsPolytopes.clear();
@@ -189,7 +194,6 @@ void DynamicPolytope::computeRegions()
       // Use result.CWCForces, result.CWCMoments, result.zeroMomentRegion, etc.
     }
   }
-  // TODO make VRPRegionJob_ a pointer so that we can delete it which removes the gui
 
   // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updati
   dt_loop_total_ = mc_rtc::elapsed_ms(start_loop);
@@ -256,7 +260,7 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
 
   // here we manipulate polytope objects so need to add origin as a generator on the polyhedral cone
   generators.emplace_back(Eigen::Vector3d::Zero());
-  for(auto g : generators)
+  for(const auto & g : generators)
   {
     // this is the translational part: no variation of force depending on application point
     Eigen::Vector3d newForce = g;

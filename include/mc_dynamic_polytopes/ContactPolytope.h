@@ -185,28 +185,8 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
 
   void load(const mc_rtc::Configuration & config)
   {
-    // FIXME: bug in mc_rtc
-    config("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
-    config("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
-    config("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
-    config("gui")("polyhedronForce")("edges", polyForceConfig_.edge_config);
-    config("gui")("polyhedronForce")("show_edges", polyForceConfig_.show_edges);
-    config("gui")("polyhedronForce")("fixed_edge_color", polyForceConfig_.fixed_edge_color);
-    config("gui")("polyhedronForce")("vertices")("color", polyForceConfig_.vertices_config.color);
-    config("gui")("polyhedronForce")("vertices")("scale", polyForceConfig_.vertices_config.scale);
-    config("gui")("polyhedronForce")("show_vertices", polyForceConfig_.show_vertices);
-    config("gui")("polyhedronForce")("fixed_vertices_color", polyForceConfig_.fixed_vertices_color);
-
-    config("gui")("polyhedronMoment")("triangle_color", polyMomentConfig_.triangle_color);
-    config("gui")("polyhedronMoment")("show_triangle", polyMomentConfig_.show_triangle);
-    config("gui")("polyhedronMoment")("use_triangle_color", polyMomentConfig_.use_triangle_color);
-    config("gui")("polyhedronMoment")("edges", polyMomentConfig_.edge_config);
-    config("gui")("polyhedronMoment")("show_edges", polyMomentConfig_.show_edges);
-    config("gui")("polyhedronMoment")("fixed_edge_color", polyMomentConfig_.fixed_edge_color);
-    config("gui")("polyhedronMoment")("vertices")("color", polyMomentConfig_.vertices_config.color);
-    config("gui")("polyhedronMoment")("vertices")("scale", polyMomentConfig_.vertices_config.scale);
-    config("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
-    config("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
+    config("polyhedronForce", polyForceConfig_);
+    config("polyhedronMoment", polyMomentConfig_);
   }
 };
 

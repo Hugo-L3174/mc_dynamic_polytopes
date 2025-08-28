@@ -242,7 +242,7 @@ struct AsyncJob
   }
 
 protected: // bookkeeping for the async job
-  bool running_ = false;
+  std::atomic<bool> running_ = false;
   bool inLogger_ = false;
   bool inGUI_ = false;
   bool startedOnce_ = false;

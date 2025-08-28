@@ -103,50 +103,10 @@ public: // XXX: should this be public?
 
   void load(const mc_rtc::Configuration & config)
   {
-    // FIXME: bug in mc_rtc
-    config("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);
-    config("gui")("polyhedronForce")("show_triangle", polyForceConfig_.show_triangle);
-    config("gui")("polyhedronForce")("use_triangle_color", polyForceConfig_.use_triangle_color);
-    config("gui")("polyhedronForce")("edges", polyForceConfig_.edge_config);
-    config("gui")("polyhedronForce")("show_edges", polyForceConfig_.show_edges);
-    config("gui")("polyhedronForce")("fixed_edge_color", polyForceConfig_.fixed_edge_color);
-    config("gui")("polyhedronForce")("vertices")("color", polyForceConfig_.vertices_config.color);
-    config("gui")("polyhedronForce")("vertices")("scale", polyForceConfig_.vertices_config.scale);
-    config("gui")("polyhedronForce")("show_vertices", polyForceConfig_.show_vertices);
-    config("gui")("polyhedronForce")("fixed_vertices_color", polyForceConfig_.fixed_vertices_color);
-
-    config("gui")("polyhedronMoment")("triangle_color", polyMomentConfig_.triangle_color);
-    config("gui")("polyhedronMoment")("show_triangle", polyMomentConfig_.show_triangle);
-    config("gui")("polyhedronMoment")("use_triangle_color", polyMomentConfig_.use_triangle_color);
-    config("gui")("polyhedronMoment")("edges", polyMomentConfig_.edge_config);
-    config("gui")("polyhedronMoment")("show_edges", polyMomentConfig_.show_edges);
-    config("gui")("polyhedronMoment")("fixed_edge_color", polyMomentConfig_.fixed_edge_color);
-    config("gui")("polyhedronMoment")("vertices")("color", polyMomentConfig_.vertices_config.color);
-    config("gui")("polyhedronMoment")("vertices")("scale", polyMomentConfig_.vertices_config.scale);
-    config("gui")("polyhedronMoment")("show_vertices", polyMomentConfig_.show_vertices);
-    config("gui")("polyhedronMoment")("fixed_vertices_color", polyMomentConfig_.fixed_vertices_color);
-
-    config("gui")("polyhedronZMP")("triangle_color", polyZMPConfig_.triangle_color);
-    config("gui")("polyhedronZMP")("show_triangle", polyZMPConfig_.show_triangle);
-    config("gui")("polyhedronZMP")("use_triangle_color", polyZMPConfig_.use_triangle_color);
-    config("gui")("polyhedronZMP")("edges", polyZMPConfig_.edge_config);
-    config("gui")("polyhedronZMP")("show_edges", polyZMPConfig_.show_edges);
-    config("gui")("polyhedronZMP")("fixed_edge_color", polyZMPConfig_.fixed_edge_color);
-    config("gui")("polyhedronZMP")("vertices")("color", polyZMPConfig_.vertices_config.color);
-    config("gui")("polyhedronZMP")("vertices")("scale", polyZMPConfig_.vertices_config.scale);
-    config("gui")("polyhedronZMP")("show_vertices", polyZMPConfig_.show_vertices);
-    config("gui")("polyhedronZMP")("fixed_vertices_color", polyZMPConfig_.fixed_vertices_color);
-
-    config("gui")("polyhedronZeroMomentArea")("triangle_color", polyZeroMomentAreaConfig_.triangle_color);
-    config("gui")("polyhedronZeroMomentArea")("show_triangle", polyZeroMomentAreaConfig_.show_triangle);
-    config("gui")("polyhedronZeroMomentArea")("use_triangle_color", polyZeroMomentAreaConfig_.use_triangle_color);
-    config("gui")("polyhedronZeroMomentArea")("edges", polyZeroMomentAreaConfig_.edge_config);
-    config("gui")("polyhedronZeroMomentArea")("show_edges", polyZeroMomentAreaConfig_.show_edges);
-    config("gui")("polyhedronZeroMomentArea")("fixed_edge_color", polyZeroMomentAreaConfig_.fixed_edge_color);
-    config("gui")("polyhedronZeroMomentArea")("vertices")("color", polyZeroMomentAreaConfig_.vertices_config.color);
-    config("gui")("polyhedronZeroMomentArea")("vertices")("scale", polyZeroMomentAreaConfig_.vertices_config.scale);
-    config("gui")("polyhedronZeroMomentArea")("show_vertices", polyZeroMomentAreaConfig_.show_vertices);
-    config("gui")("polyhedronZeroMomentArea")("fixed_vertices_color", polyZeroMomentAreaConfig_.fixed_vertices_color);
+    config("polyhedronForce", polyForceConfig_);
+    config("polyhedronMoment", polyMomentConfig_);
+    config("polyhedronZMP", polyZMPConfig_);
+    config("polyhedronZeroMomentArea", polyZeroMomentAreaConfig_);
   }
 
 protected:

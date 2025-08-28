@@ -1,6 +1,6 @@
-#include "mc_dynamic_polytopes/Time.h"
 #include <mc_dynamic_polytopes/GUIComputations.h>
 #include <mc_dynamic_polytopes/PolytopeFuncs.h>
+#include <mc_dynamic_polytopes/Time.h>
 #include <mc_dynamic_polytopes/VRPRegionMinkSum.h>
 
 namespace mc_dynamic_polytopes
