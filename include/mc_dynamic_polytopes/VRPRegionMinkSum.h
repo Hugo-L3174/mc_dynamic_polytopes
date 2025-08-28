@@ -41,7 +41,12 @@ struct VRPRegionMinkSumJobResult
   boost::shared_ptr<Polytope_Rn> CWCForces;
   boost::shared_ptr<Polytope_Rn> CWCMoments;
   boost::shared_ptr<Polytope_Rn> zeroMomentRegion;
+  // Internal matrices of planes and offsets of the regions for constraints
   std::pair<Eigen::MatrixXd, Eigen::VectorXd> DCMVRPPlanes; // Matrix constraint for force polytope
+                                                            //
+                                                            //
+  // internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP constraint
+  // or check
   std::pair<Eigen::MatrixXd, Eigen::VectorXd> zeroMomentPlanes; // Matrix constraint for zero moment region
   std::vector<std::array<Eigen::Vector3d, 3>> CWCForceTriangles;
   std::vector<std::array<Eigen::Vector3d, 3>> CWCMomentTriangles;

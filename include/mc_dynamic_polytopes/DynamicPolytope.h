@@ -33,17 +33,7 @@ struct DynamicPolytope
   DynamicPolytope(const std::string & name,
                   const mc_rbdyn::Robot & robot,
                   const mc_rtc::Configuration & dynamicPolyConfig);
-  ~DynamicPolytope();
-
-  // stopping function for destructor
-  inline void stopThread()
-  {
-    computing_ = false;
-    if(minkSumThread_.joinable())
-    {
-      minkSumThread_.join();
-    }
-  }
+  ~DynamicPolytope() = default;
 
   // Set current contact set to be used for next computation: contact name and contact reference pose, ie the frame of
   // the target surface of the contact (only the orientation is used for the friction cone)
@@ -54,14 +44,6 @@ struct DynamicPolytope
     for(const auto & contact : contacts)
     {
       refContactTransforms_.emplace(contact.first, contact.second);
-    }
-
-    // if computation has not started yet, launch it
-    if(!computing_)
-    {
-      computing_ = true;
-      // signal main computation thread
-      cv_.notify_one();
     }
   }
 
@@ -84,14 +66,6 @@ struct DynamicPolytope
         // if second robot, assume it is targeted and put identity
         refContactTransforms_.emplace(contactName, sva::PTransformd::Identity());
       }
-    }
-
-    // if computation has not started yet, launch it
-    if(!computing_)
-    {
-      computing_ = true;
-      // signal main computation thread
-      cv_.notify_one();
     }
   }
 
@@ -127,51 +101,34 @@ struct DynamicPolytope
                                   double maxForce,
                                   Eigen::Vector3d CoM);
 
-  // ------------------------------------------------------> Plane constraints getters
-
-  // Returns the internal normals matrix and offsets vector of the eCMP region for QP constraint or check
-  const HRepXd & getVRPPlanes()
-  {
-    std::lock_guard<std::mutex> lock(VRPPlanesMutex_);
-    return DCMVRPPlanes_;
-  };
-
-  // Returns the internal normals matrix and offsets vector of the zero moment region (subset of the DCM region) for QP
-  // constraint or check
-  const HRepXd & getZeroMomentPlanes()
-  {
-    std::lock_guard<std::mutex> lock(zeroMomentPlanesMutex_);
-    return zeroMomentPlanes_;
-  };
-
-  // Returns the desired cone H representation
-  // Prefer using the force polytope planes if they are computed
-  const HRepXd & getFrictionConePlanes(const std::string & contactName)
-  {
-    if(feasiblePolytopesJobs_.count(contactName))
-    {
-      auto & job = feasiblePolytopesJobs_[contactName];
-      if(auto result = job.lastResult())
-      {
-        return result->frictionConesPlanes;
-      }
-    }
-    mc_rtc::log::error_and_throw("Cannot get friction cone planes for contact {}", contactName);
-  };
-
-  // Returns the desired contact force polytope H representation
-  const HRepXd & getForcePolyPlanes(const std::string & contactName)
-  {
-    if(feasiblePolytopesJobs_.count(contactName))
-    {
-      auto & job = feasiblePolytopesJobs_[contactName];
-      if(auto result = job.lastResult())
-      {
-        return result->forcePolyPlanes;
-      }
-    }
-    mc_rtc::log::error_and_throw("Cannot get force poly planes for contact {}", contactName);
-  };
+  // // Returns the desired cone H representation
+  // // Prefer using the force polytope planes if they are computed
+  // const HRepXd & getFrictionConePlanes(const std::string & contactName)
+  // {
+  //   if(feasiblePolytopesJobs_.count(contactName))
+  //   {
+  //     auto & job = feasiblePolytopesJobs_[contactName];
+  //     if(auto result = job.lastResult())
+  //     {
+  //       return result->frictionConesPlanes;
+  //     }
+  //   }
+  //   mc_rtc::log::error_and_throw("Cannot get friction cone planes for contact {}", contactName);
+  // };
+  //
+  // // Returns the desired contact force polytope H representation
+  // const HRepXd & getForcePolyPlanes(const std::string & contactName)
+  // {
+  //   if(feasiblePolytopesJobs_.count(contactName))
+  //   {
+  //     auto & job = feasiblePolytopesJobs_[contactName];
+  //     if(auto result = job.lastResult())
+  //     {
+  //       return result->forcePolyPlanes;
+  //     }
+  //   }
+  //   mc_rtc::log::error_and_throw("Cannot get force poly planes for contact {}", contactName);
+  // };
 
   const auto & robot() const noexcept
   {
@@ -279,7 +236,6 @@ protected:
   // This is used to compute the orientation of the friction cone as it should be in the r1 frame (same as the force
   // polytope) for distribution, and not in world frame
   std::map<std::string, sva::PTransformd> refContactTransforms_;
-
   std::map<std::string, mc_rbdyn::Contact &> contactsRBDyn_;
 
   bool withMoments_;
@@ -289,57 +245,19 @@ protected:
   bool combineWithFriction_ = true;
   bool DDfrictionCones_ = false;
 
-  // politopix
-
   std::map<std::string, ContactPolytopeJob>
       feasiblePolytopesJobs_; /// For each contact store a job to compute its feasibility polytope asynchronously
 
   // boost::shared_ptr<Polytope_Rn> eCMPRegion_;
 
-  // threading things
-  // atomic bool as condition to keep computing in loop
-  std::atomic<bool> computing_{false};
-  // condition variable to signal start of loop for main thread
-  std::condition_variable cv_;
-  std::mutex contactSetMutex_;
   ZMPRegionJob zmpRegionJob_;
   VRPRegionMinkSumJob VRPRegionMinkSumJob_;
-  std::thread minkSumThread_;
-  std::atomic<bool> VRPRegionComputed_{true};
-  std::mutex VRPPlanesMutex_;
-  std::mutex zeroMomentPlanesMutex_;
-
-  // Internal matrices of planes and offsets of the regions for constraints
-  HRepXd DCMVRPPlanes_;
-
-  HRepXd zeroMomentPlanes_;
 
   // timers to measure computation times
   mc_rtc::duration_ms dt_loop_total_;
   mc_rtc::duration_ms dt_compute_contactSet_;
-  mc_rtc::duration_ms dt_compute_minkSum_;
-  mc_rtc::duration_ms dt_update_planes_;
-  mc_rtc::duration_ms dt_compute_guiTrianglesContacts_;
-  mc_rtc::duration_ms dt_compute_guiTrianglesRegions_ = mc_rtc::duration_ms::zero();
-  mc_rtc::duration_ms dt_zeroMoment_intersection_;
+  // mc_rtc::duration_ms dt_compute_guiTrianglesContacts_;
   mc_rtc::duration_ms dt_update_rbdyn_;
-
-  // map of polytope triangles for display
-  std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> frictionConesTrianglesMap_;
-  std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> forcePolyTrianglesMap_;
-  std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> momentPolytopesTrianglesMap_;
-  std::vector<std::array<Eigen::Vector3d, 3>> CWCForceTriangles_;
-  std::vector<std::array<Eigen::Vector3d, 3>> CWCMomentTriangles_;
-  std::vector<std::array<Eigen::Vector3d, 3>> eCMPTriangles_;
-  std::vector<std::array<Eigen::Vector3d, 3>> ZMPTriangles_;
-  std::vector<std::array<Eigen::Vector3d, 3>> zeroMomentTriangles_;
-
-  // gui configs
-  mc_rtc::gui::PolyhedronConfig polyForceConfig_;
-  mc_rtc::gui::PolyhedronConfig polyMomentConfig_;
-  mc_rtc::gui::PolyhedronConfig polyZMPConfig_;
-  mc_rtc::gui::PolyhedronConfig polyZeroMomentAreaConfig_;
-  double guiScale_;
 };
 
 } // namespace mc_dynamic_polytopes
