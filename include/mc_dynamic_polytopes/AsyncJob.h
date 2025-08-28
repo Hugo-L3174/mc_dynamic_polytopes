@@ -211,14 +211,14 @@ struct AsyncJob
 
   void addToLogger(mc_rtc::Logger & logger, const std::string & prefix)
   {
-    if(logger_) return;
+    if(logger_ && inLogger_) return;
     logger_ = &logger;
     loggerPrefix_ = prefix;
   }
 
   void addToGUI(mc_rtc::gui::StateBuilder & gui, const std::vector<std::string> & category)
   {
-    if(gui_) return;
+    if(gui_ && inGUI_) return;
     gui_ = &gui;
     guiCategory_ = category;
   }
@@ -228,6 +228,7 @@ struct AsyncJob
     if(logger_)
     {
       logger_->removeLogEntries(this);
+      inLogger_ = false;
     }
   }
 
@@ -236,6 +237,7 @@ struct AsyncJob
     if(gui_)
     {
       gui_->removeElements(this);
+      inGUI_ = false;
     }
   }
 

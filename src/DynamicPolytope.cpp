@@ -144,20 +144,6 @@ void DynamicPolytope::computeRegions()
   dt_compute_contactSet_ = mc_rtc::elapsed_ms(start_loop);
 
   // Steps 3-6: launch the rest everytime the previous full region was computed
-  // if(computeRegions_) // TODO: restore implementation
-  // {
-  //   if(VRPRegionComputed_)
-  //   {
-  //     if(minkSumThread_.joinable())
-  //     {
-  //       minkSumThread_.join();
-  //     }
-  //
-  //     VRPRegionComputed_ = false;
-  //     minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
-  //   }
-  // }
-
   if(computeRegions_)
   {
     // After checking results for feasiblePolytopesJobs_ and zmpRegionJob_
@@ -185,9 +171,6 @@ void DynamicPolytope::computeRegions()
       }
 
       input.zmpRegion = zmpRegionJob_.lastResult()->zmpRegion;
-      // FIXME:
-      // input.withMoments = withMoments_;
-      // input.withVRPOffset = withVRPOffset_;
 
       VRPRegionMinkSumJob_.startAsync();
       if(logger_)
@@ -202,7 +185,6 @@ void DynamicPolytope::computeRegions()
       }
     }
 
-    // Later in the loop, check for completion:
     if(VRPRegionMinkSumJob_.checkResult())
     {
       // const auto & result = *VRPRegionMinkSumJob_.lastResult();
@@ -591,7 +573,15 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)
   gui.addElement(this, category,
                  mc_rtc::gui::Checkbox(
                      "Compute explicit regions", [this]() { return computeRegions_; },
-                     [this]() { computeRegions_ = !computeRegions_; }),
+                     [this]()
+                     {
+                       computeRegions_ = !computeRegions_;
+                       if(!computeRegions_)
+                       {
+                         VRPRegionMinkSumJob_.removeFromGUI();
+                         zmpRegionJob_.removeFromGUI();
+                       }
+                     }),
                  mc_rtc::gui::Checkbox(
                      "Compute force poly from Hrep", [this]() { return HrepMode_; },
                      [this, updateJobsGlobalParams]()
