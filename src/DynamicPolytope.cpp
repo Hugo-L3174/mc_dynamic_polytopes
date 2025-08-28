@@ -55,6 +55,7 @@ void DynamicPolytope::computeRegions()
     // and replace this call
     auto start_constructor = mc_rtc::clock::now();
     auto & job = feasiblePolytopesJobs_[contactName];
+    job.contactRBDyn_ = &contactsRBDyn_.at(contactName);
     job.load(config_); // XXX should load per-contact config instead of global one
     job.contactTimers.dt_constructor = mc_rtc::elapsed_ms_count(start_constructor);
     job.HrepMode_ = HrepMode_; // XXX
@@ -76,9 +77,6 @@ void DynamicPolytope::computeRegions()
                                               input.surfacePose = input.surface->X_0_s(robot);
                                               input.accW = robot.accW();
                                               input.refContactTransform = refContactTransforms_.at(contactName);
-                                              // XXX: this uses the default value anyway
-                                              // input.numberOfFrictionSides = numbersOfFrictionSides_.at(contactName);
-                                              // input.forceScalingFactor = forceScalingFactors_.at(contactName);
                                               input.frictionCoefficient = contactsRBDyn_.at(contactName).friction();
                                             })
                                             .count();

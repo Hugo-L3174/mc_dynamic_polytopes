@@ -103,9 +103,9 @@ struct ContactPolytopeInput
   sva::PTransformd refContactTransform;
 
   // number of sides for cones linearization
-  int numberOfFrictionSides = defaultFrictionSides;
+  std::atomic<int> numberOfFrictionSides = defaultFrictionSides;
   // force scaling factor (alpha to be used to transfer between contacts)
-  double forceScalingFactor = defaultForceScale;
+  std::atomic<double> forceScalingFactor = defaultForceScale;
   // friction coeff for the cones
   double frictionCoefficient = defaultFrictionCoeff;
 };
@@ -124,6 +124,8 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
 
   // Additional timers for polytope computation steps
   ContactTimers contactTimers;
+
+  mc_rbdyn::Contact * contactRBDyn_; // for gui friction coeff
 
   // Actual computation
   void buildActuationPolytopeFromContact(const ContactPolytopeInput & input,
@@ -167,14 +169,18 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
                      Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
                                 [&result]() { return result.momentPolytopesTriangles; }));
 
-    gui_->addElement(
-        this, coeffsCat,
-        NumberSlider(
-            fmt::format(contact + " force alpha [0.001-1]"), [this, contact]() { return input_.forceScalingFactor; },
-            [this](double scale) { input_.forceScalingFactor = scale; }, 0.001, 1.0),
-        IntegerInput(
-            fmt::format(contact + " number of friction sides"), [this]() { return input_.numberOfFrictionSides; },
-            [this](int nbFrictionSides) { input_.numberOfFrictionSides = nbFrictionSides; }));
+    gui_->addElement(this, coeffsCat,
+                     NumberSlider(
+                         fmt::format(contact + " force alpha [0.001-1]"),
+                         [this, contact]() { return input_.forceScalingFactor.load(); },
+                         [this](double scale) { input_.forceScalingFactor = scale; }, 0.001, 1.0),
+                     IntegerInput(
+                         fmt::format(contact + " number of friction sides"),
+                         [this]() { return input_.numberOfFrictionSides.load(); },
+                         [this](int nbFrictionSides) { input_.numberOfFrictionSides = nbFrictionSides; }),
+                     NumberInput(
+                         fmt::format(contact + " friction coefficient"), [this]() { return contactRBDyn_->friction(); },
+                         [this](double mu) { contactRBDyn_->friction(mu); }));
   }
 
   void load(const mc_rtc::Configuration & config)

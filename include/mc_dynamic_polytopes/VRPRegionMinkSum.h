@@ -54,8 +54,7 @@ struct VRPRegionMinkSumJobResult
   std::vector<std::array<Eigen::Vector3d, 3>> zeroMomentTriangles;
 };
 
-struct VRPRegionMinkSumJob
-: public mc_dynamic_polytopes::MakeAsyncJob<VRPRegionMinkSumJob, VRPRegionMinkSumJobInput, VRPRegionMinkSumJobResult>
+struct VRPRegionMinkSumJob : MakeAsyncJob<VRPRegionMinkSumJob, VRPRegionMinkSumJobInput, VRPRegionMinkSumJobResult>
 {
   bool withVRPOffset_ = true;
   bool withMoments_ = false;
@@ -90,14 +89,6 @@ public: // XXX: should this be public?
 
   void addToGUIImpl()
   {
-    //
-    // gui.addElement(
-    //     this, CWCCat,
-    //     mc_rtc::gui::Polyhedron("CWC forces", polyForceConfig_, [this]() { return getCWCForceTriangles(); }),
-    //     /*mc_rtc::gui::Polyhedron("CWC moments", polyMomentConfig_, [this]() { return getCWCMomentTriangles(); }),*/
-    //     mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [this]() { return getZMPTriangles(); }),
-    //     mc_rtc::gui::Polyhedron("Zero moment region", polyZeroMomentAreaConfig_,
-    //                             [this]() { return getZeroMomentTriangles(); }));
     auto CWCCat = guiCategory_;
     CWCCat.push_back("Contact Wrench Cone");
 

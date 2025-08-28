@@ -321,8 +321,6 @@ ContactPolytopeResult ContactPolytopeJob::computeJob()
   ContactPolytopeResult result;
   auto & frictionCone = result.frictionCone;
   auto & actuationPolytope = result.actuationPolytope;
-  const auto forceScalingFactor = input_.forceScalingFactor;
-  const auto numberOfFrictionSides = input_.numberOfFrictionSides;
   const auto X_r1_r2 = input_.refContactTransform; // XXX: double check
   const auto frictionCoeff = input_.frictionCoefficient;
 
@@ -331,11 +329,11 @@ ContactPolytopeResult ContactPolytopeJob::computeJob()
   auto start_forcePoly = mc_rtc::clock::now();
 
   // update the correct force polytope in the map
-  buildActuationPolytopeFromContact(input_, actuationPolytope, forceScalingFactor, dim);
+  buildActuationPolytopeFromContact(input_, actuationPolytope, input_.forceScalingFactor, dim);
   contactTimers.dt_forcePolytope = mc_rtc::elapsed_ms_count(start_forcePoly);
 
   auto start_frictionCone = mc_rtc::clock::now();
-  buildFrictionConeFromContactWithHrep(numberOfFrictionSides, X_r1_r2, frictionCone, frictionCoeff, dim);
+  buildFrictionConeFromContactWithHrep(input_.numberOfFrictionSides, X_r1_r2, frictionCone, frictionCoeff, dim);
   contactTimers.dt_frictionCone = mc_rtc::elapsed_ms_count(start_frictionCone);
 
   auto start_intersection = mc_rtc::clock::now();
