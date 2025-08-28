@@ -48,6 +48,7 @@ add_library(DynamicPolytope SHARED
   ${PROJECT_SOURCE_DIR}/src/ContactPolytope.cpp
   ${PROJECT_SOURCE_DIR}/src/PolytopeFuncs.cpp
   ${PROJECT_SOURCE_DIR}/src/ZMPRegion.cpp
+  ${PROJECT_SOURCE_DIR}/src/VRPRegionMinkSum.cpp
 )
 
 target_include_directories(DynamicPolytope

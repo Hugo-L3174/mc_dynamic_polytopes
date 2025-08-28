@@ -31,13 +31,6 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
 
     refContactTransforms_.emplace(contact, sva::PTransformd::Identity());
   }
-  // init CWC polytope
-  CWCForces_.reset(new Polytope_Rn());
-  CWCMoments_.reset(new Polytope_Rn());
-
-  // init zmp region and intersection with ecmp region
-  zmpRegion_.reset(new Polytope_Rn());
-  zeroMomentRegion_.reset(new Polytope_Rn());
 }
 
 DynamicPolytope::~DynamicPolytope()
@@ -180,6 +173,57 @@ void DynamicPolytope::computeRegions()
   //     minkSumThread_ = std::thread(&DynamicPolytope::computeVRPRegionWithMinkSum, this);
   //   }
   // }
+
+  if(computeRegions_)
+  {
+    // After checking results for feasiblePolytopesJobs_ and zmpRegionJob_
+    bool allContactsReady = std::all_of(activeContacts_.begin(), activeContacts_.end(),
+                                        [&](const auto & contactName)
+                                        {
+                                          return feasiblePolytopesJobs_.count(contactName)
+                                                 && feasiblePolytopesJobs_.at(contactName).lastResult().has_value();
+                                        });
+    bool zmpReady = zmpRegionJob_.lastResult().has_value();
+
+    if(allContactsReady && zmpReady && !VRPRegionMinkSumJob_.running())
+    {
+      auto & input = VRPRegionMinkSumJob_.input();
+      input.initialize_robot(robot_);
+      input.contactsPolytopes.clear();
+      input.contactsPose.clear();
+
+      for(const auto & contactName : activeContacts_)
+      {
+        const auto & job = feasiblePolytopesJobs_.at(contactName);
+        input.contactsPolytopes[contactName] = *job.lastResult();
+        input.contactsPose[contactName] = refContactTransforms_.at(contactName);
+      }
+
+      input.zmpRegion = zmpRegionJob_.lastResult()->zmpRegion;
+      // FIXME:
+      // input.withMoments = withMoments_;
+      // input.withVRPOffset = withVRPOffset_;
+
+      VRPRegionMinkSumJob_.startAsync();
+      if(logger_)
+      {
+        VRPRegionMinkSumJob_.addToLogger(*logger_, name_ + "_VRPRegionMinkSum");
+      }
+      if(gui_)
+      {
+        auto vrpRegionCategory = guiCategory_;
+        vrpRegionCategory.push_back("VRP Region");
+        VRPRegionMinkSumJob_.addToGUI(*gui_, vrpRegionCategory);
+      }
+    }
+
+    // Later in the loop, check for completion:
+    if(VRPRegionMinkSumJob_.checkResult())
+    {
+      // const auto & result = *VRPRegionMinkSumJob_.lastResult();
+      // Use result.CWCForces, result.CWCMoments, result.zeroMomentRegion, etc.
+    }
+  }
 
   // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updati
   dt_loop_total_ = mc_rtc::elapsed_ms(start_loop);
@@ -338,206 +382,15 @@ void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & rob
 void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot) {}
 
 // TODO: restore implementation
-void DynamicPolytope::computeMinkowskySumPolitopix()
-{
-  // auto start_minkSum = mc_rtc::clock::now();
-  // boost::shared_ptr<Polytope_Rn> newForcePoly(new Polytope_Rn());
-  // boost::shared_ptr<Polytope_Rn> newMomentPoly(new Polytope_Rn());
-  //
-  // // putting it in vector form for library function
-  // std::vector<boost::shared_ptr<Polytope_Rn>> polytopesForces;
-  // std::vector<boost::shared_ptr<Polytope_Rn>> polytopesMoments;
-  //
-  // // protecting set of contact names
-  // contactSetMutex_.lock();
-  // // mc_rtc::log::info("Starting to add polytopes for mink sum");
-  // for(const auto & active : activeContacts_)
-  // {
-  //   boost::shared_ptr<Polytope_Rn> newContactPoly(new Polytope_Rn());
-  //   // The friction + force intersection was overwritten in the force polytopes
-  //   // Locking polytope mutex
-  //   // Copying the contact polytopes to use for mink computation
-  //   getContactMutex(forcePolyMutexes_, active).lock();
-  //   politopixAPI::copyPolytope(forcePolytopes_.at(active), newContactPoly);
-  //   // mc_rtc::log::info("Adding poly with {} gens and {} hs", newContactPoly->numberOfGenerators(),
-  //   //                   newContactPoly->numberOfHalfSpaces());
-  //   getContactMutex(forcePolyMutexes_, active).unlock();
-  //
-  //   // After copying the contact frame polytope, rotate it to world frame before minkowski sum
-  //   // Vectors are force in contact frame so X_contact_f
-  //   // We want X_0_f = X_contact_f * X_0_contact
-  //   auto X_0_contact = robot_.surfacePose(active);
-  //   X_0_contact.translation() = Eigen::Vector3d::Zero();
-  //
-  //   // Rotating generators
-  //   constIteratorOfListOfGeometricObjects<boost::shared_ptr<Generator_Rn>> iterGen(
-  //       newContactPoly->getListOfGenerators());
-  //   for(iterGen.begin(); iterGen.end() != true; iterGen.next())
-  //   {
-  //     Eigen::Vector3d vect(iterGen.current()->getCoordinate(0), iterGen.current()->getCoordinate(1),
-  //                          iterGen.current()->getCoordinate(2));
-  //     vect = (sva::PTransformd(vect) * X_0_contact).translation();
-  //     iterGen.current()->setCoordinate(0, vect.x());
-  //     iterGen.current()->setCoordinate(1, vect.y());
-  //     iterGen.current()->setCoordinate(2, vect.z());
-  //   }
-  //   // Rotating halfspaces normals
-  //   constIteratorOfListOfGeometricObjects<boost::shared_ptr<HalfSpace_Rn>> iterHS(
-  //       newContactPoly->getListOfHalfSpaces());
-  //   for(iterHS.begin(); iterHS.end() != true; iterHS.next())
-  //   {
-  //     Eigen::Vector3d normal(iterHS.current()->getCoefficient(0), iterHS.current()->getCoefficient(1),
-  //                            iterHS.current()->getCoefficient(2));
-  //     normal = (sva::PTransformd(normal) * X_0_contact).translation();
-  //     iterHS.current()->setCoefficient(0, normal.x());
-  //     iterHS.current()->setCoefficient(1, normal.y());
-  //     iterHS.current()->setCoefficient(2, normal.z());
-  //   }
-  //
-  //   polytopesForces.emplace_back(newContactPoly);
-  //   if(withMoments_)
-  //   {
-  //     polytopesMoments.emplace_back(frictionConesMoments_.at(active));
-  //   }
-  // }
-  // contactSetMutex_.unlock();
-  //
-  // try
-  // {
-  //   if(!polytopesForces.empty())
-  //   {
-  //     MinkowskiSum Mink(polytopesForces, newForcePoly);
-  //   }
-  //   std::lock_guard<std::mutex> lock(CWCMutex_);
-  //   CWCForces_.reset();
-  //   CWCForces_ = newForcePoly;
-  // }
-  // catch(const std::exception & e)
-  // {
-  //   mc_rtc::log::error("[{}] Minkowski sum error: {}", name_, e.what());
-  // }
-  //
-  // // mc_rtc::log::info("CWCForces_ has {} generators and {} facets", CWCForces_->numberOfGenerators(),
-  // // CWCForces_->numberOfHalfSpaces());
-  // if(withMoments_)
-  // {
-  //   MinkowskiSum Mink(polytopesMoments, newMomentPoly);
-  //   // mc_rtc::log::info("CWCMoments_ has {} generators and {} facets", CWCMoments_->numberOfGenerators(),
-  //   // CWCMoments_->numberOfHalfSpaces());
-  //   CWCMoments_.reset();
-  //   CWCMoments_ = newMomentPoly;
-  // }
-  //
-  // dt_compute_minkSum_ = mc_rtc::clock::now() - start_minkSum;
-}
-
-void DynamicPolytope::computeECMPRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot)
-{
-  /* We want to scale the force polytope according to the eCMP expression:
-  eCMP = c - sumF/(m*(g/Dz)) --> eCMP = c - sumF*(Dz/mg)
-  --> scale force polytope by - Deltaz/mg */
-
-  // Several steps needed to mirror the polytope correctly (including the planes orientations):
-
-  // First we scale with the POSITIVE scale because scaling only modifies the HS offsets, not their normals so the
-  // polytope would be inverted but the planes inside out
-  double scale = comPosition.z() / (robot.mass() * 9.81);
-  TopGeomTools::scalingFactor(CWCForces_, scale);
-  // Then we negate the polytope to mirror the generators and the normals correctly
-  CWCForces_->negate();
-
-  // Finally translate it from origin to the robot CoM to get eCMP region
-  boost::numeric::ublas::vector<double> CoM(3);
-  CoM[0] = comPosition.x();
-  CoM[1] = comPosition.y();
-  CoM[2] = comPosition.z();
-  TopGeomTools::translate(CWCForces_, CoM);
-}
-
-void DynamicPolytope::VRPtranslation(double deltaZ)
-{
-  boost::numeric::ublas::vector<double> deltaZVector(3);
-  deltaZVector[0] = 0.;
-  deltaZVector[1] = 0.;
-  deltaZVector[2] = deltaZ;
-  std::lock_guard<std::mutex> lockCWC(CWCMutex_);
-  TopGeomTools::translate(CWCForces_, deltaZVector);
-  std::lock_guard<std::mutex> lockZeroMoment(zeroMomentMutex_);
-  TopGeomTools::translate(zeroMomentRegion_, deltaZVector);
-}
-
-void DynamicPolytope::computeZeroMomentIntersection()
-{
-  auto start_zeroMomentIntersection = mc_rtc::clock::now();
-  zeroMomentMutex_.lock();
-  zeroMomentRegion_->reset();
-  // making a deep copy of the force polytope to use as base for intersection with zmp region
-  // (avoids shared_ptr problems)
-  CWCMutex_.lock();
-  politopixAPI::copyPolytope(CWCForces_, zeroMomentRegion_);
-  CWCMutex_.unlock();
-
-  ZMPMutex_.lock();
-  // politopixAPI::computeIntersection(CWCForces_, zmpRegion_, zeroMomentRegion_);
-  politopixAPI::computeIntersectionWithoutCheck(zeroMomentRegion_, zmpRegion_);
-  ZMPMutex_.unlock();
-  zeroMomentMutex_.unlock();
-
-  dt_zeroMoment_intersection_ = mc_rtc::clock::now() - start_zeroMomentIntersection;
-}
-
-// TODO: restore implementation
-void DynamicPolytope::computeVRPRegionWithMinkSum()
-{
-  // // Step 3: All feasible regions computed, start minkowsky sum computation
-  // computeMinkowskySumPolitopix();
-  //
-  // // Step 4: wait for finished mink sum to convert to eCMP region (no thread needed)
-  // computeECMPRegion(robot_.com(), robot_);
-  //
-  // // Step 5: wait for finished ZMP region to start zero moment intersection with eCMP region
-  // if(zmpThread_.joinable())
-  // {
-  //   zmpThread_.join();
-  // }
-  // computeZeroMomentIntersection();
-  //
-  // // Step 6: translate eCMP region and zero-moment intersection to get VRP regions
-  // if(withVRPOffset_)
-  // {
-  //   VRPtranslation(robot_.com().z());
-  // }
-  //
-  // // Update VRP planes internal variables to be fetched by controller
-  // auto start_updatePlanes = mc_rtc::clock::now();
-  // VRPPlanesMutex_.lock();
-  // CWCMutex_.lock();
-  // updatePlanesMatrixConstraint(CWCForces_, DCMVRPPlanes_.first, DCMVRPPlanes_.second);
-  // CWCMutex_.unlock();
-  // VRPPlanesMutex_.unlock();
-  //
-  // // Update zero moment region planes to be fetched by controller
-  // zeroMomentPlanesMutex_.lock();
-  // zeroMomentMutex_.lock();
-  // updatePlanesMatrixConstraint(zeroMomentRegion_, zeroMomentPlanes_.first, zeroMomentPlanes_.second);
-  // zeroMomentMutex_.unlock();
-  // zeroMomentPlanesMutex_.unlock();
-  // dt_update_planes_ = mc_rtc::clock::now() - start_updatePlanes;
-  //
-  // // Update GUI display of regions
-  // updateTrianglesRegionsGUIPolitopix();
-  // VRPRegionComputed_ = true;
-}
-
 void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d /* comPosition */, const mc_rbdyn::Robot & robot)
 {
-  // We scale the moment polytope according to the expression of the difference between eCMP and ZMP:
-  // eCMP = ZMP + 1/(m*(g+\ddot(c)_z)) * (tau_y, - tau_x, 0.)
-  // scale moment polytope by 1/(m*(g+\ddot(c)_z))
-  double scale = 1 / (robot.mass() * (9.81 + robot.comAcceleration().z()));
-  TopGeomTools::scalingFactor(CWCMoments_, scale);
-
-  // TODO change coords from varignon (check) + check that corresponds to inside of eCMP region?
+  // // We scale the moment polytope according to the expression of the difference between eCMP and ZMP:
+  // // eCMP = ZMP + 1/(m*(g+\ddot(c)_z)) * (tau_y, - tau_x, 0.)
+  // // scale moment polytope by 1/(m*(g+\ddot(c)_z))
+  // double scale = 1 / (robot.mass() * (9.81 + robot.comAcceleration().z()));
+  // TopGeomTools::scalingFactor(CWCMoments_, scale);
+  //
+  // // TODO change coords from varignon (check) + check that corresponds to inside of eCMP region?
 }
 
 // Eigen::Vector3d projectPointInVRPRegion(Eigen::Vector3d testedPoint)
@@ -676,74 +529,12 @@ void DynamicPolytope::updateTrianglesContactsGUIPolitopix()
   // dt_compute_guiTrianglesContacts_ = mc_rtc::clock::now() - start_guiTriangles;
 }
 
-void DynamicPolytope::updateTrianglesRegionsGUIPolitopix()
-{
-  auto start_guiTriangles = mc_rtc::clock::now();
-  contactSetMutex_.lock();
-  auto noActiveContacts = activeContacts_.empty();
-  contactSetMutex_.unlock();
-
-  if(!noActiveContacts)
-  {
-    // gui scale for CWC should be 1, it is position space and not force space (because eCMP)
-    // update6DPolyTrianglesPolitopix(CWC_, CWCMomentTriangles_, CWCForceTriangles_, guiScale_);
-    CWCForceTrianglesMutex_.lock();
-    CWCMutex_.lock();
-    update3DPolyTrianglesPolitopix(CWCForces_, CWCForceTriangles_, 1);
-    CWCMutex_.unlock();
-    CWCForceTrianglesMutex_.unlock();
-
-    // scale 1 here: already position space
-    ZMPTrianglesMutex_.lock();
-    ZMPMutex_.lock();
-    update3DPolyTrianglesPolitopix(zmpRegion_, ZMPTriangles_, 1);
-    ZMPMutex_.unlock();
-    ZMPTrianglesMutex_.unlock();
-
-    zeroMomentTrianglesMutex_.lock();
-    zeroMomentMutex_.lock();
-    update3DPolyTrianglesPolitopix(zeroMomentRegion_, zeroMomentTriangles_, 1);
-    zeroMomentMutex_.unlock();
-    zeroMomentTrianglesMutex_.unlock();
-
-    if(withMoments_)
-    {
-      CWCMomentTrianglesMutex_.lock();
-      update3DPolyTrianglesPolitopix(CWCMoments_, CWCMomentTriangles_, guiScale_);
-      CWCMomentTrianglesMutex_.unlock();
-    }
-  }
-  else
-  {
-    CWCForceTrianglesMutex_.lock();
-    CWCForceTriangles_.clear();
-    CWCForceTrianglesMutex_.unlock();
-
-    ZMPTrianglesMutex_.lock();
-    ZMPTriangles_.clear();
-    ZMPTrianglesMutex_.unlock();
-
-    zeroMomentTrianglesMutex_.lock();
-    zeroMomentTriangles_.clear();
-    zeroMomentTrianglesMutex_.unlock();
-
-    if(withMoments_)
-    {
-      CWCMomentTrianglesMutex_.lock();
-      CWCMomentTriangles_.clear();
-      CWCMomentTrianglesMutex_.unlock();
-    }
-  }
-  dt_compute_guiTrianglesRegions_ = mc_rtc::clock::now() - start_guiTriangles;
-}
-
 void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
                                            const Eigen::VectorXd & Offsets,
                                            mc_rbdyn::Contact & contactRBDyn)
 {
   mc_rbdyn::FeasiblePolytope polytope({Normals, Offsets});
   // Update the contact polytope of the desired robot
-  // FIXME : This contact can be dead at this point, find a way to catch the segfault
   if(robot_.robotIndex() == contactRBDyn.r1Index())
   {
     contactRBDyn.feasiblePolytopeR1(polytope);

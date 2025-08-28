@@ -17,6 +17,7 @@
 #include <Tasks/QPContacts.h>
 
 #include <mc_dynamic_polytopes/ContactPolytope.h>
+#include <mc_dynamic_polytopes/VRPRegionMinkSum.h>
 #include <mc_dynamic_polytopes/ZMPRegion.h>
 #include <politopix/PolyhedralAlgorithms_Rn.h>
 #include <politopix/PrismaticPolyhedron_Rn.h>
@@ -191,9 +192,6 @@ protected:
   // Updates the internal maps of triangles of the contacts for gui display
   void updateTrianglesContactsGUIPolitopix();
 
-  // Updates the internal maps of triangles of the total regions for gui display
-  void updateTrianglesRegionsGUIPolitopix();
-
   /* computes all cones from the surfaces with the given names (set by setCurrentContacts), reset the pointers of the
   map and updates the H-description of the cone using the double description algorithm.
   */
@@ -223,28 +221,9 @@ protected:
   // The generators are computed then used to build the Polytope_Rn object which is added to the cones vector
   // void computeWrenchConesFromContactSet(const mc_rbdyn::Robot & robot);
 
-  // Computes the minkowsky sum of the given friction cones and puts the result in the CWC_ polytope object
-  void computeMinkowskySumPolitopix();
-
-  // Computes the eCMP region from the CWC
-  // /!\ this modifies the CWC to invert and scale it, the result is still in the CWC polytope !
-  void computeECMPRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot);
-
   // Computes the 3d volume of the moments from the contact surfaces borders resulting from the CWC generating rays at
   // these limits
   void computeMomentsRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot);
-
-  /* Computes the intersection between the eCMP region and the ZMP region to get the zero moment region,
-  put in zeroMomentRegion_
-  */
-  void computeZeroMomentIntersection();
-
-  // Translates the eCMP region and the zero-moment region with a vertical Delta z offset to get actual DCM region
-  void VRPtranslation(double deltaZ);
-
-  // Computes the mink sum of the contact regions, scale to get eCMP region, intersect with ZMP region, and translate
-  // everything to get VRP region
-  void computeVRPRegionWithMinkSum();
 
   // Computes the convex hull of the CWC_ polytope
   // Might be unnecessary, heavy algorithm to remove unnecessary faces
@@ -278,34 +257,10 @@ protected:
 
   // ------------------------------------------------------> GUI getters
 
-  std::vector<std::array<Eigen::Vector3d, 3>> getCWCForceTriangles()
-  {
-    std::lock_guard<std::mutex> lock(CWCForceTrianglesMutex_);
-    return CWCForceTriangles_;
-  };
-
-  std::vector<std::array<Eigen::Vector3d, 3>> getCWCMomentTriangles()
-  {
-    std::lock_guard<std::mutex> lock(CWCMomentTrianglesMutex_);
-    return CWCMomentTriangles_;
-  };
-
   // std::vector<std::array<Eigen::Vector3d, 3>> getECMPTriangles()
   // {
   //   return eCMPTriangles_;
   // };
-
-  std::vector<std::array<Eigen::Vector3d, 3>> getZMPTriangles()
-  {
-    std::lock_guard<std::mutex> lock(ZMPTrianglesMutex_);
-    return ZMPTriangles_;
-  };
-
-  std::vector<std::array<Eigen::Vector3d, 3>> getZeroMomentTriangles()
-  {
-    std::lock_guard<std::mutex> lock(zeroMomentTrianglesMutex_);
-    return zeroMomentTriangles_;
-  };
 
   // ------------------------------------------------------> Internal variables
 
@@ -339,12 +294,7 @@ protected:
   std::map<std::string, ContactPolytopeJob>
       feasiblePolytopesJobs_; /// For each contact store a job to compute its feasibility polytope asynchronously
 
-  boost::shared_ptr<Polytope_Rn> CWCForces_;
-  boost::shared_ptr<Polytope_Rn> CWCMoments_;
   // boost::shared_ptr<Polytope_Rn> eCMPRegion_;
-
-  boost::shared_ptr<Polytope_Rn> zmpRegion_;
-  boost::shared_ptr<Polytope_Rn> zeroMomentRegion_;
 
   // threading things
   // atomic bool as condition to keep computing in loop
@@ -353,20 +303,11 @@ protected:
   std::condition_variable cv_;
   std::mutex contactSetMutex_;
   ZMPRegionJob zmpRegionJob_;
+  VRPRegionMinkSumJob VRPRegionMinkSumJob_;
   std::thread minkSumThread_;
   std::atomic<bool> VRPRegionComputed_{true};
   std::mutex VRPPlanesMutex_;
   std::mutex zeroMomentPlanesMutex_;
-
-  std::mutex CWCMutex_;
-  std::mutex ZMPMutex_;
-  std::mutex zeroMomentMutex_;
-
-  // gui mutexes
-  std::mutex CWCForceTrianglesMutex_;
-  std::mutex CWCMomentTrianglesMutex_;
-  std::mutex ZMPTrianglesMutex_;
-  std::mutex zeroMomentTrianglesMutex_;
 
   // Internal matrices of planes and offsets of the regions for constraints
   HRepXd DCMVRPPlanes_;

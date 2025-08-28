@@ -173,6 +173,7 @@ struct AsyncJob
    */
   bool checkResult()
   {
+    if(!startedOnce_) return false;
     auto start_check = mc_rtc::clock::now();
     if(futureResult_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
     {
