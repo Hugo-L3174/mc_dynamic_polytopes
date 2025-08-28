@@ -321,7 +321,6 @@ ContactPolytopeResult ContactPolytopeJob::computeJob()
   ContactPolytopeResult result;
   auto & frictionCone = result.frictionCone;
   auto & actuationPolytope = result.actuationPolytope;
-  const auto & contactName = input_.contactName;
   const auto forceScalingFactor = input_.forceScalingFactor;
   const auto numberOfFrictionSides = input_.numberOfFrictionSides;
   const auto X_r1_r2 = input_.refContactTransform; // XXX: double check

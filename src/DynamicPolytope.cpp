@@ -187,6 +187,7 @@ void DynamicPolytope::computeRegions()
 
     if(allContactsReady && zmpReady && !VRPRegionMinkSumJob_.running())
     {
+      VRPRegionMinkSumJob_.load(config_);
       auto & input = VRPRegionMinkSumJob_.input();
       input.initialize_robot(robot_);
       input.contactsPolytopes.clear();
@@ -224,6 +225,7 @@ void DynamicPolytope::computeRegions()
       // Use result.CWCForces, result.CWCMoments, result.zeroMomentRegion, etc.
     }
   }
+  // TODO make VRPRegionJob_ a pointer so that we can delete it which removes the gui
 
   // Regions GUI is now updated at the end of their thread to ensure scaling and translation are done before updati
   dt_loop_total_ = mc_rtc::elapsed_ms(start_loop);
@@ -564,25 +566,10 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
     job.addToLogger(*logger_, name_ + "_" + contactName);
   }
 
-  // logger.addLogEntry("perf_" + prefix + name_ + "_minkSum", this, [this]() { return dt_minkSum().count(); });
-  // logger.addLogEntry("perf_" + prefix + name_ + "_updatePlanes", this, [this]() { return dt_updatePlanes().count();
   // }); logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesContacts", this,
   //                    [this]() { return dt_guiTrianglesContacts().count(); });
   // logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesRegions", this,
   //                    [this]() { return dt_guiTrianglesRegions().count(); });
-  // logger.addLogEntry("perf_" + prefix + name_ + "_zeroMomentIntersection", this,
-  //                    [this]() { return dt_zeroMomentInter().count(); });
-  // for(const auto & contact : possibleContacts_)
-  // {
-  //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_frictionCone", this,
-  //                      [this, contact]() { return getContact_dt_frictionCone(contact).count(); });
-  //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_forcePolytope", this,
-  //                      [this, contact]() { return getContact_dt_forcePolytope(contact).count(); });
-  //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_intersection", this,
-  //                      [this, contact]() { return getContact_dt_intersection(contact).count(); });
-  //   logger.addLogEntry("perf_" + prefix + name_ + "_" + contact + "_Total", this,
-  //                      [this, contact]() { return getContact_dt_Total(contact).count(); });
-  // }
 }
 
 void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)
@@ -660,6 +647,8 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)
       job.guiScale_ = guiScale_;
       job.combineWithFriction_ = combineWithFriction_;
     }
+    VRPRegionMinkSumJob_.withMoments_ = withMoments_;
+    VRPRegionMinkSumJob_.withVRPOffset_ = withVRPOffset_;
   };
   gui.addElement(this, category,
                  mc_rtc::gui::Checkbox(
@@ -690,18 +679,14 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)
                      {
                        DDfrictionCones_ = !DDfrictionCones_;
                        updateJobsGlobalParams();
+                     }),
+                 mc_rtc::gui::Checkbox(
+                     "With eCMP-VRP offset", [this]() { return withVRPOffset_; },
+                     [this, updateJobsGlobalParams]()
+                     {
+                       withVRPOffset_ = !withVRPOffset_;
+                       updateJobsGlobalParams();
                      }));
-  // mc_rtc::gui::Checkbox(
-  //     "With eCMP-VRP offset", [this]() { return withVRPOffset_; }, [this]() { withVRPOffset_ = !withVRPOffset_;
-  //     }));
-  //
-  // gui.addElement(
-  //     this, CWCCat,
-  //     mc_rtc::gui::Polyhedron("CWC forces", polyForceConfig_, [this]() { return getCWCForceTriangles(); }),
-  //     /*mc_rtc::gui::Polyhedron("CWC moments", polyMomentConfig_, [this]() { return getCWCMomentTriangles(); }),*/
-  //     mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [this]() { return getZMPTriangles(); }),
-  //     mc_rtc::gui::Polyhedron("Zero moment region", polyZeroMomentAreaConfig_,
-  //                             [this]() { return getZeroMomentTriangles(); }));
 }
 
 } // namespace mc_dynamic_polytopes
