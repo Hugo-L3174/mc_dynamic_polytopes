@@ -84,6 +84,8 @@ void DynamicPolytope::computeRegions()
 
     if(!job.running())
     {
+      // Initialize inputs required by the contact polytope computation
+      // It is only safe to modify job.input() while the async task is not running
       job.contactTimers.dt_copyInputs = mc_rtc::timedExecution(
                                             [&]()
                                             {
@@ -108,7 +110,7 @@ void DynamicPolytope::computeRegions()
       job.startAsync();
       if(logger_)
       {
-        job.addToLogger(*logger_, name_);
+        job.addToLogger(*logger_, name_ + "_ContactPolytope_" + contactName);
       }
       if(gui_)
       {
@@ -119,17 +121,20 @@ void DynamicPolytope::computeRegions()
 
   // Step 2: wait for finished individual feasible regions
   // Wait for finished threads and join them, then update their matrix constraints
-  auto start_debug = mc_rtc::clock::now();
-  for(const auto & contactName : activeContacts_)
-  {
-    auto & job = feasiblePolytopesJobs_[contactName];
-    if(job.checkResult())
-    {
-      const auto & result = *job.lastResult();
-      updateRBDynPolytopes(result.forcePolyPlanes.first, result.forcePolyPlanes.second, contactsRBDyn_.at(contactName));
-    }
-  }
-  dt_debug_ = mc_rtc::elapsed_ms(start_debug);
+  dt_update_rbdyn_ = mc_rtc::timedExecution(
+      [&, this]()
+      {
+        for(const auto & contactName : activeContacts_)
+        {
+          auto & job = feasiblePolytopesJobs_[contactName];
+          if(job.checkResult())
+          {
+            const auto & result = *job.lastResult();
+            updateRBDynPolytopes(result.forcePolyPlanes.first, result.forcePolyPlanes.second,
+                                 contactsRBDyn_.at(contactName));
+          }
+        }
+      });
 
   // Remove contacts
   for(const auto & removeContact : contactsToRemove_)
@@ -144,7 +149,19 @@ void DynamicPolytope::computeRegions()
     {
       zmpRegionJob_.input().initialize(robot, activeContacts_);
       zmpRegionJob_.startAsync();
+
+      if(logger_)
+      {
+        zmpRegionJob_.addToLogger(*logger_, name_ + "_ZMPRegion");
+      }
+      if(gui_)
+      {
+        auto zmpRegionCategory = guiCategory_;
+        zmpRegionCategory.push_back("ZMP Region");
+        zmpRegionJob_.addToGUI(*gui_, zmpRegionCategory);
+      }
     }
+    zmpRegionJob_.checkResult();
   }
 
   dt_compute_contactSet_ = mc_rtc::elapsed_ms(start_loop);
@@ -742,14 +759,18 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
 {
   auto prefix = name_;
   logger_ = &logger;
-  auto pp = "perf_" + prefix + "_";
+  auto pp = "perf_" + prefix + "_MainThread_";
   logger.addLogEntry(pp + "totalLoop [ms]", this, [this]() { return dt_loop_total_.count(); });
   logger.addLogEntry(pp + "computeContactSet [ms]", this, [this]() { return dt_compute_contactSet_.count(); });
-  logger.addLogEntry(pp + "dt_debug [ms]", this, [this]() { return dt_debug_.count(); });
+  logger.addLogEntry(pp + "dt_updateRBDynPolytopes [ms]", this, [this]() { return dt_update_rbdyn_.count(); });
 
-  for(auto & [_, job] : feasiblePolytopesJobs_)
+  if(computeRegions_)
   {
-    job.addToLogger(*logger_, name_);
+    zmpRegionJob_.addToLogger(logger, name_ + "_ZMPRegion");
+  }
+  for(auto & [contactName, job] : feasiblePolytopesJobs_)
+  {
+    job.addToLogger(*logger_, name_ + "_" + contactName);
   }
 
   // logger.addLogEntry("perf_" + prefix + name_ + "_minkSum", this, [this]() { return dt_minkSum().count(); });
@@ -780,6 +801,13 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)
   auto & gui = *gui_;
   gui.removeCategory(guiCategory_);
   auto category = guiCategory_;
+
+  if(computeRegions_)
+  {
+    auto zmpRegionCategory = category;
+    zmpRegionCategory.push_back("ZMP Region");
+    zmpRegionJob_.addToGUI(*gui_, guiCategory_);
+  }
 
   // XXX: simplify this
   config_("gui")("polyhedronForce")("triangle_color", polyForceConfig_.triangle_color);

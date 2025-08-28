@@ -381,7 +381,7 @@ protected:
   mc_rtc::duration_ms dt_compute_guiTrianglesContacts_;
   mc_rtc::duration_ms dt_compute_guiTrianglesRegions_ = mc_rtc::duration_ms::zero();
   mc_rtc::duration_ms dt_zeroMoment_intersection_;
-  mc_rtc::duration_ms dt_debug_;
+  mc_rtc::duration_ms dt_update_rbdyn_;
 
   // map of polytope triangles for display
   std::map<std::string, std::vector<std::array<Eigen::Vector3d, 3>>> frictionConesTrianglesMap_;

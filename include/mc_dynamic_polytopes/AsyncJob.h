@@ -25,6 +25,10 @@ namespace mc_dynamic_polytopes
  * does not inherently make modifying the input in-place safe, ensure that your code does not start another async job
  * while you are modifying the input.
  *
+ * @note You must call checkResult() at every iteration of your controller loop. This method is responsible for
+ * bookkeeping, result retrieval, and deferred GUI/logging actions. It is roughly equivalent to \c ros::spinOnce()
+ * for ROS nodes.
+ *
  * @tparam Derived The child class type (CRTP).
  * @tparam Input The input type for the job.
  * @tparam Result The result type produced by the job.
@@ -132,6 +136,7 @@ struct AsyncJob
         [this]()
         {
           running_ = true;
+          startedOnce_ = true;
           auto start_compute = mc_rtc::clock::now();
           auto result = static_cast<Derived *>(this)->computeJob();
           timers_.dt_compute = mc_rtc::elapsed_ms_count(start_compute);
@@ -145,6 +150,27 @@ struct AsyncJob
     return running_;
   }
 
+  /**
+   * @return True if the job has been started at least once.
+   */
+  bool startedOnce() const noexcept
+  {
+    return startedOnce_;
+  }
+
+  /**
+   * @brief Check if the asynchronous job has completed and handle bookkeeping.
+   *
+   * This method must be called at every iteration of the controller.
+   * It is responsible for all bookkeeping related to the async job:
+   * - Checks if the asynchronous computation has finished.
+   * - Retrieves and stores the result if available.
+   * - Calls deferred GUI and logging methods if enabled.
+   *
+   * This is roughly speaking the equivalent to \c ros::spinOnce() for ROS nodes.
+   *
+   * @return True if the job has completed and a result is available, false otherwise.
+   */
   bool checkResult()
   {
     auto start_check = mc_rtc::clock::now();
@@ -216,6 +242,7 @@ protected: // bookkeeping for the async job
   bool running_ = false;
   bool inLogger_ = false;
   bool inGUI_ = false;
+  bool startedOnce_ = false;
   std::future<Result> futureResult_;
   std::optional<Result> lastResult_;
   Timers timers_;
@@ -246,7 +273,7 @@ protected: // bookkeeping for the async job
 protected:
   void addToLogger_()
   {
-    auto contactPrefix = "perf_" + loggerPrefix_ + "_" + input_.contactName + "_";
+    auto contactPrefix = "perf_" + loggerPrefix_ + "_";
     logger_->addLogEntry(contactPrefix + "startAsync [ms]", this, [this]() { return timers_.dt_startAsync; });
     logger_->addLogEntry(contactPrefix + "checkResult [ms]", this, [this]() { return timers_.dt_checkResult; });
     logger_->addLogEntry(contactPrefix + "loggerImpl [ms]", this, [this]() { return timers_.dt_loggerImpl; });
