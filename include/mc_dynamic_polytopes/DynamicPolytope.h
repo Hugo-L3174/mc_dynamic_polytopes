@@ -28,6 +28,21 @@
 namespace mc_dynamic_polytopes
 {
 
+/**
+ * @brief Manages the computation and representation of dynamic balance polytopes for robot contacts.
+ *
+ * The DynamicPolytope class handles:
+ * - Initialization and configuration of polytope computations for robot contacts.
+ * - Asynchronous computation of feasible force and moment regions, friction cones, and ZMP/VRP regions.
+ * - Management of per-contact jobs and their results.
+ * - Integration with mc_rtc GUI and logging for visualization and performance monitoring.
+ * - Thread-safe updates and removal of contact-related data.
+ *
+ * Usage:
+ * - Instantiate with robot and configuration.
+ * - Call computeRegions() in the control loop to update feasible regions.
+ * - Use addToLogger() and addToGUI() to enable logging and visualization.
+ */
 struct DynamicPolytope
 {
   DynamicPolytope(const std::string & name,
@@ -47,6 +62,16 @@ struct DynamicPolytope
     }
   }
 
+  /**
+   * @brief Sets the controller's active contacts for polytope computations.
+   *
+   * Updates the internal contact set with the provided map of contact names to mc_rbdyn::Contact references.
+   * The reference to each mc_rbdyn::Contact will be used by computeRegions() to update the internal contact's polytope
+   * representation. This updated polytope can subsequently be used by the whole-body QP to exploit the feasible region
+   * representation.
+   *
+   * @param contacts Map from contact name to reference of mc_rbdyn::Contact.
+   */
   void setControllerContacts(const std::map<std::string, mc_rbdyn::Contact &> & contacts)
   {
     refContactTransforms_.clear();
@@ -136,7 +161,18 @@ struct DynamicPolytope
   }
 
   /**
-   * XXX: MUST be called every iteration
+   * @brief Computes feasible regions for all active contacts and updates related jobs.
+   *
+   * This function performs the following steps:
+   * - Updates the set of active and removed contacts.
+   * - Launches asynchronous computations for individual contact polytopes and friction cones.
+   * - Waits for completion of these computations and updates matrix constraints.
+   * - Removes jobs for contacts that are no longer active.
+   * - Launches and manages the ZMP region computation job.
+   * - Once all contact and ZMP jobs are ready, launches the VRP region Minkowski sum job.
+   * - Updates GUI and logger entries as needed.
+   *
+   * This method should be called at each control loop iteration to ensure all regions are up-to-date.
    */
   void computeRegions();
 
