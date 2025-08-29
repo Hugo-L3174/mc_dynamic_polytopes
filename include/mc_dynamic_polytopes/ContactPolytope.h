@@ -183,10 +183,22 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
                          [this](double mu) { contactRBDyn_->friction(mu); }));
   }
 
-  void load(const mc_rtc::Configuration & config)
+  void load(const mc_rtc::Configuration & config, const std::string & contactName)
   {
-    config("polyhedronForce", polyForceConfig_);
-    config("polyhedronMoment", polyMomentConfig_);
+    auto loadPolyConfigs = [&](const mc_rtc::Configuration & conf)
+    {
+      conf("polyhedronForce", polyForceConfig_);
+      conf("polyhedronMoment", polyMomentConfig_);
+    };
+
+    loadPolyConfigs(config);
+    if(auto contactsConf = config.find("contacts"))
+    {
+      if(auto contactConf = contactsConf->find(contactName))
+      {
+        loadPolyConfigs(*contactConf);
+      }
+    }
   }
 };
 

@@ -57,7 +57,8 @@ void DynamicPolytope::computeRegions()
     job.contactRBDyn_ = &contactsRBDyn_.at(contactName);
     if(!job.startedOnce())
     {
-      job.load(config_("gui", mc_rtc::Configuration{})); // XXX should load per-contact config instead of global one
+      job.load(config_("gui", mc_rtc::Configuration{}),
+               contactName); // XXX should load per-contact config instead of global one
     }
     job.contactTimers.dt_constructor = mc_rtc::elapsed_ms_count(start_constructor);
     job.HrepMode_ = HrepMode_; // XXX
