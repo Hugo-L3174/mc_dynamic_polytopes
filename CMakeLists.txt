@@ -45,6 +45,10 @@ add_library(DynamicPolytope SHARED
   ${PROJECT_SOURCE_DIR}/src/WrenchCones.cpp
   ${PROJECT_SOURCE_DIR}/src/GUIComputations.cpp
   ${PROJECT_SOURCE_DIR}/src/DynamicPolytope.cpp
+  ${PROJECT_SOURCE_DIR}/src/ContactPolytope.cpp
+  ${PROJECT_SOURCE_DIR}/src/PolytopeFuncs.cpp
+  ${PROJECT_SOURCE_DIR}/src/ZMPRegion.cpp
+  ${PROJECT_SOURCE_DIR}/src/VRPRegionMinkSum.cpp
 )
 
 target_include_directories(DynamicPolytope
@@ -63,6 +67,8 @@ target_link_libraries(DynamicPolytope
   Qhull::qhull_r
 )
 
+add_subdirectory(tests)
+
 #### Exporting targets and installing ####
 
 install(
@@ -72,6 +78,6 @@ install(
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-install(DIRECTORY include/
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mc_dynamic_polytopes
+install(DIRECTORY include/mc_dynamic_polytopes
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )

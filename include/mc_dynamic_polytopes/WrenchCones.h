@@ -1,6 +1,9 @@
 #pragma once
 #include <mc_control/fsm/Controller.h>
 
+namespace mc_dynamic_polytopes
+{
+
 Eigen::MatrixXd linearizedFrictionCone(int numberOfFrictionSides, Eigen::Matrix3d m_rotation, double m_frictionCoef);
 
 // Compute the directions for the generators of a linearized friction cone from its orientation in world frame and the
@@ -52,3 +55,5 @@ Eigen::Matrix3d skewMatrix(const Eigen::Vector3d v);
 
 // This function is inspired by the lipm stabilizer contact instanciation
 void findHalfWidthLength(const mc_rbdyn::Surface & surface, double & halfWidth, double & halfLength);
+
+} // namespace mc_dynamic_polytopes
