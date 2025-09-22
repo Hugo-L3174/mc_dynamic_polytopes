@@ -390,7 +390,24 @@ ContactPolytopeResult ContactPolytopeJob::computeJob()
                                result.frictionConesPlanes.second);
   updatePlanesMatrixConstraint(result.actuationPolytope, result.forcePolyPlanes.first, result.forcePolyPlanes.second);
 
-  result.updateTrianglesGUIPolytopix(guiScale_, input_.surfacePose);
+  // Check if a gui scale exists in datastore from somewhere else, and if so apply it to the polytope
+  if(ctl_)
+  {
+    if(ctl_->datastore().has("Polytopes::GUIScale::" + input_.contactName))
+    {
+      double scale = ctl_->datastore().call<double>("Polytopes::GUIScale::" + input_.contactName);
+      result.updateTrianglesGUIPolytopix(scale * guiScale_, input_.surfacePose);
+    }
+    else
+    {
+      result.updateTrianglesGUIPolytopix(guiScale_, input_.surfacePose);
+    }
+  }
+  else
+  {
+    result.updateTrianglesGUIPolytopix(guiScale_, input_.surfacePose);
+  }
+
   return result;
 }
 } // namespace mc_dynamic_polytopes

@@ -21,6 +21,15 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
   Rn::setTolerance(1e-07);
 }
 
+DynamicPolytope::DynamicPolytope(const std::string & name,
+                                 const mc_rbdyn::Robot & robot,
+                                 const mc_rtc::Configuration & dynamicPolyConfig,
+                                 mc_control::MCController * ctl)
+: DynamicPolytope::DynamicPolytope(name, robot, dynamicPolyConfig)
+{
+  ctl_ = ctl;
+}
+
 // Check contacts from ctl
 //
 // Start async thread for each new contact
@@ -55,6 +64,12 @@ void DynamicPolytope::computeRegions()
     auto start_constructor = mc_rtc::clock::now();
     auto & job = feasiblePolytopesJobs_[contactName];
     job.contactRBDyn_ = &contactsRBDyn_.at(contactName);
+    // Check if a controller was passed for datastore calls
+    if(ctl_)
+    {
+      job.ctl_ = ctl_;
+    }
+
     if(!job.startedOnce())
     {
       job.load(config_("gui", mc_rtc::Configuration{}),

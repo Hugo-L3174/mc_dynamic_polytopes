@@ -48,6 +48,11 @@ struct DynamicPolytope
   DynamicPolytope(const std::string & name,
                   const mc_rbdyn::Robot & robot,
                   const mc_rtc::Configuration & dynamicPolyConfig);
+  // Constructor with controller ptr for datastore calls
+  DynamicPolytope(const std::string & name,
+                  const mc_rbdyn::Robot & robot,
+                  const mc_rtc::Configuration & dynamicPolyConfig,
+                  mc_control::MCController * ctl);
   ~DynamicPolytope() = default;
 
   // Set current contact set to be used for next computation: contact name and contact reference pose, ie the frame of
@@ -263,6 +268,7 @@ protected:
   mc_rtc::gui::StateBuilder * gui_ = nullptr;
   mc_rtc::Logger * logger_ = nullptr;
   mc_rtc::Configuration config_;
+  mc_control::MCController * ctl_ = nullptr;
   std::set<std::string> possibleContacts_;
   std::set<std::string> activeContacts_;
   bool contactsUpdated_ = false;

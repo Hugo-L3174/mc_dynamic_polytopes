@@ -116,7 +116,10 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
   bool combineWithFriction_ = true;
   bool DDfrictionCones_ = false;
   bool HrepMode_ = false;
-  double guiScale_ = 0.001;
+  // Default scale is 1/2000 (coherent for Newtons)
+  double guiScale_ = 0.0005;
+  // Controller ptr to access datastore
+  mc_control::MCController * ctl_;
 
   // Polyhedron configs
   mc_rtc::gui::PolyhedronConfig polyForceConfig_;
@@ -189,6 +192,7 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
     {
       conf("polyhedronForce", polyForceConfig_);
       conf("polyhedronMoment", polyMomentConfig_);
+      conf("guiScale", guiScale_);
     };
 
     loadPolyConfigs(config);
