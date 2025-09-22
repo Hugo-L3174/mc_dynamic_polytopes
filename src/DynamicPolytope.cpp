@@ -59,8 +59,6 @@ void DynamicPolytope::computeRegions()
   // independant, then their intersection
   for(const auto & contactName : activeContacts_)
   {
-    // TODO: Build input for each contact
-    // and replace this call
     auto start_constructor = mc_rtc::clock::now();
     auto & job = feasiblePolytopesJobs_[contactName];
     job.contactRBDyn_ = &contactsRBDyn_.at(contactName);
@@ -72,8 +70,7 @@ void DynamicPolytope::computeRegions()
 
     if(!job.startedOnce())
     {
-      job.load(config_("gui", mc_rtc::Configuration{}),
-               contactName); // XXX should load per-contact config instead of global one
+      job.load(config_, contactName);
     }
     job.contactTimers.dt_constructor = mc_rtc::elapsed_ms_count(start_constructor);
     job.HrepMode_ = HrepMode_; // XXX

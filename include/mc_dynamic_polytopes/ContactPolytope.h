@@ -188,19 +188,31 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
 
   void load(const mc_rtc::Configuration & config, const std::string & contactName)
   {
-    auto loadPolyConfigs = [&](const mc_rtc::Configuration & conf)
+    // lambda
+    auto loadGUIPolyConfigs = [&](const mc_rtc::Configuration & conf)
     {
-      conf("polyhedronForce", polyForceConfig_);
-      conf("polyhedronMoment", polyMomentConfig_);
-      conf("guiScale", guiScale_);
+      if(conf.has("gui"))
+      {
+        auto guiConf = conf("gui");
+        guiConf("polyhedronForce", polyForceConfig_);
+        guiConf("polyhedronMoment", polyMomentConfig_);
+        guiConf("guiScale", guiScale_);
+      }
     };
 
-    loadPolyConfigs(config);
+    // General default GUI config
+    loadGUIPolyConfigs(config);
+
+    // Per contact config for those specified
     if(auto contactsConf = config.find("contacts"))
     {
       if(auto contactConf = contactsConf->find(contactName))
       {
-        loadPolyConfigs(*contactConf);
+        loadGUIPolyConfigs(*contactConf);
+        if(contactConf->has("nbFrictionSides"))
+        {
+          input_.numberOfFrictionSides = (*contactConf)("nbFrictionSides");
+        }
       }
     }
   }
