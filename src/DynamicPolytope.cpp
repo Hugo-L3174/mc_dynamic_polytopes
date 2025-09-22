@@ -18,7 +18,7 @@ DynamicPolytope::DynamicPolytope(const std::string & name,
   // Init dimension
   unsigned int dim = withMoments_ ? 6 : 3;
   Rn::setDimension(dim);
-  Rn::setTolerance(1.e-07);
+  Rn::setTolerance(1e-07);
 }
 
 // Check contacts from ctl
