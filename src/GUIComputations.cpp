@@ -3,46 +3,57 @@
 namespace mc_dynamic_polytopes
 {
 
-void sortFaceVertices(std::vector<Eigen::Vector3d> & vertices, Eigen::Vector3d faceNormal)
+std::optional<Eigen::Vector3d> sortFaceVertices(std::vector<Eigen::Vector3d> & vertices, Eigen::Vector3d faceNormal)
 {
-  // Choose first point as reference
-  Eigen::Vector3d reference = vertices[0];
+  if(vertices.size() == 3)
+  {
+    // Ensure that the vertices are in counter-clockwise order with respect to faceNormal
+    Eigen::Vector3d triNormal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]);
+    if(triNormal.dot(faceNormal) < 0)
+    {
+      std::swap(vertices[1], vertices[2]);
+    }
+    return std::nullopt;
+  }
+  else if(vertices.size() < 3)
+  {
+    // Nothing to sort
+    return std::nullopt;
+  }
+
+  // Compute centroid as centroid point for stability
+  Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+  for(const auto & v : vertices)
+  {
+    centroid += v;
+  }
+  centroid /= static_cast<double>(vertices.size());
+
   // Find a basis for the face plane to project the points in 2d on it
-  Eigen::Vector3d basis1 = (vertices[1] - vertices[0]).normalized();
+  Eigen::Vector3d basis1 = (vertices[0] - centroid).normalized();
   Eigen::Vector3d basis2 = faceNormal.cross(basis1).normalized();
 
   // lambda to project on the 2d plane
-  auto projectTo2D = [&basis1, &basis2, &reference](const Eigen::Vector3d & point) -> Eigen::Vector2d
+  auto projectTo2D = [&basis1, &basis2, &centroid](const Eigen::Vector3d & point) -> Eigen::Vector2d
   {
-    Eigen::Vector3d p = point - reference;
+    Eigen::Vector3d p = point - centroid;
     return Eigen::Vector2d(p.dot(basis1), p.dot(basis2));
   };
-  // lambda to compare angles
-  auto comparePolarAngles = [&](Eigen::Vector3d p1, Eigen::Vector3d p2, const Eigen::Vector3d reference) -> bool
+
+  // Project to 2D and compute angle
+  auto angleFromCentroid = [&](const Eigen::Vector3d & point) -> double
   {
-    Eigen::Vector2d proj1 = projectTo2D(p1);
-    Eigen::Vector2d proj2 = projectTo2D(p2);
-
-    Eigen::Vector2d refProj = projectTo2D(reference);
-    Eigen::Vector2d v1 = proj1 - refProj;
-    Eigen::Vector2d v2 = proj2 - refProj;
-
-    double crossProduct = v1.x() * v2.y() - v1.y() * v2.x();
-
-    if(crossProduct == 0)
-    {
-      // if colinear, sort from distance to reference
-      return (v1.squaredNorm()) < (v2.squaredNorm());
-    }
-
-    // otherwise sort from cross product sign
-    return crossProduct > 0;
+    Eigen::Vector3d vec = point - centroid;
+    double x = vec.dot(basis1);
+    double y = vec.dot(basis2);
+    return std::atan2(y, x);
   };
 
-  // sort from angle order compared to the initial point
+  // Sort vertices in counter-clockwise order around the centroid
   std::sort(vertices.begin(), vertices.end(),
-            [&](const Eigen::Vector3d & p1, const Eigen::Vector3d & p2)
-            { return comparePolarAngles(p1, p2, reference); });
+            [&](const Eigen::Vector3d & a, const Eigen::Vector3d & b)
+            { return angleFromCentroid(a) < angleFromCentroid(b); });
+  return centroid;
 }
 
 void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
@@ -76,6 +87,7 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     std::vector<Eigen::Vector3d> vertices;
 
     // get vertices coordinates of this face to build the triangles composing it
+    // NOTE: a face might have more than 3 vertices, in which case we will decompose it into triangles
     for(int faceGens = 0; faceGens < listOfFacetVertices.size(); faceGens++)
     {
       int generatorIndex = listOfFacetVertices.at(faceGens);
@@ -96,14 +108,6 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
       // mc_rtc::log::info("Vertex coords: {}", vertex.transpose());
     }
 
-    /* we got all vertices of the face in vertices vector, now order them for triangle array, ie order vertices so that
-    the normal is towards the exterior
-    We don't necessarily have only 3 vertices for this face! if not, more calculations are necessary to decompose
-    the face into triangles
-    we assume the vertices were ordered + faces are convex: then we decompose into triangles by taking the first
-    vertex and making a face with the two neighbors until the second neighbor is the last vertex
-    */
-    auto nbVertices = vertices.size();
     // mc_rtc::log::info("There are {} vertices", nbVertices);
 
     // XXX POLITOPIX: since politopix convention seems to be inverted for Hrep inequalities
@@ -115,37 +119,28 @@ void update3DPolyTrianglesPolitopix(boost::shared_ptr<Polytope_Rn> & polytope,
     hsNormal = contactPose.rotation().transpose() * hsNormal;
     hsNormal.normalize();
 
-    // Safety check: sometimes facets have zero vertices idk why, probably degenerated faces. The sorting throws if this
-    // is the case
-    if(nbVertices != 0)
+    // sort vertices in counter-clockwise order around their centroid, projected onto the face plane
+    auto centroidOpt = sortFaceVertices(vertices, hsNormal);
+    auto genTrianglesCentroid = [&](const Eigen::Vector3d & centroid, const std::vector<Eigen::Vector3d> & verts)
     {
-      // ordering the vertices
-      sortFaceVertices(vertices, hsNormal);
+      // verts should not include the centroid itself
+      size_t n = verts.size();
+      if(n < 3) return;
+      for(size_t i = 0; i < n; ++i)
+      {
+        const Eigen::Vector3d & v1 = verts[i];
+        const Eigen::Vector3d & v2 = verts[(i + 1) % n];
+        resultTriangles.push_back({centroid, v1, v2});
+      }
+    };
+
+    if(centroidOpt)
+    { // face has more than 3 vertices, we decompose it into triangles from the face centroid to each vertex
+      genTrianglesCentroid(centroidOpt.value(), vertices);
     }
-
-    // add nbVertices<3 condition because nbVertices -2 can be negative (degen faces) and with condition on negative int
-    // is evaluated to true
-    for(auto i = 0; (i < nbVertices - 2) && (nbVertices >= 3); i++)
-    {
-      // mc_rtc::log::info("Making a triangle with vertices {}, {} and {}", 0, i+1, i+2);
-      // make a triangle with vertices 0, i+1, i+2 and orient and emplace it normally
-      Eigen::Vector3d faceNormal;
-      faceNormal = (vertices.at(i + 1) - vertices.at(0)).cross(vertices.at(i + 2) - vertices.at(0));
-      // faceNormal *= -1.0;
-      faceNormal.normalize();
-      // mc_rtc::log::info("computed normal is {}", faceNormal);
-      // mc_rtc::log::info("hsNormal is {}", hsNormal);
-
-      // testing for normal direction: if normal of the triangle face * normal of the facet < 0 then we need to invert
-      // the face (politopix and gui conventions are inverted I think)
-      if(faceNormal.dot(hsNormal) > 0.0)
-      {
-        resultTriangles.push_back({vertices.at(0), vertices.at(i + 1), vertices.at(i + 2)});
-      }
-      else
-      {
-        resultTriangles.push_back({vertices.at(0), vertices.at(i + 2), vertices.at(i + 1)});
-      }
+    else if(vertices.size() == 3)
+    { // face is already a triangle, and is guaranteed to be counter-clockwise
+      resultTriangles.push_back({vertices[0], vertices[1], vertices[2]});
     }
   }
 }
