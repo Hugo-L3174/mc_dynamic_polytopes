@@ -16,6 +16,12 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
   // Removing underactuated dofs
   const int jacSize = input.mb.nrDof() - 6;
 
+  // TODO: pass this option in inputs
+  // This decides if we compute the polytope using only the force jacobian (true) or using the 6D jacobian and taking
+  // only the associated force part for visualization (false)
+  // Setting it to true should be incompatible with the withMoments option (that sets dim to 6)
+  bool forceOnly = false;
+
   // Computing dynamics terms of the equation of motion
   rbd::ForwardDynamics forwardDyn(input.mb);
   // Inertia
@@ -54,10 +60,25 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
   jac.fullJacobian(input.mb, denseJacDot, globalFullJacDot);
   // mc_rtc::log::info("Sparse Jacobian: \n{}", globalFullJac);
 
-  // rotate to contact frame
-  const Eigen::MatrixXd contactFullJac = sva::PTransformd(X_s_b.rotation()).matrix() * globalFullJac;
+  // rotate from body to contact
+  Eigen::MatrixXd contactFullJac6D = X_b_s.matrix() * globalFullJac;
   // XXX to check ! simple rotation if jacDot matrix?
-  const Eigen::MatrixXd contactFullJacDot = sva::PTransformd(X_s_b.rotation()).matrix() * globalFullJacDot;
+  Eigen::MatrixXd contactFullJacDot6D = X_b_s.matrix() * globalFullJac;
+
+  // If we want force only, just take the bottom 3 rows of the jacs, otherwise full
+  Eigen::MatrixXd contactFullJac;
+  Eigen::MatrixXd contactFullJacDot;
+  if(forceOnly)
+  {
+    contactFullJac = contactFullJac6D.bottomRows(3);
+    contactFullJacDot = contactFullJacDot6D.bottomRows(3);
+  }
+  else
+  {
+    contactFullJac = contactFullJac6D;
+    contactFullJacDot = contactFullJacDot6D;
+  }
+
   // transpose for correct calculation
   const Eigen::MatrixXd contactFullJacT = contactFullJac.transpose();
   // mc_rtc::log::info("Sparse jacobian transposed and rotated to surface frame: \n{}", contactFullJacT);
@@ -176,11 +197,23 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
 
     // mc_rtc::log::info("contactFullJac transposed is :\n{}", contactFullJac.transpose());
     /* vertices force polytope are gotten with torque limits vertices
-    f = -(JM^-1J^T)^-1JM^-1 * tau + (JM^-1J^T)^-1JM^-1 * C - (JM^-1J^T)^-1*\dot(J)*\dot(q)
-    --> f = -DCIJ_T * tau + DCIJ_T * C - OSIM * \dot(J) * \dot(q)
+    f = -(JM^-1J^T)^-1JM^-1 * tau + (JM^-1J^T)^-1JM^-1 * C - (JM^-1J^T)^-1*\dot(J)*\dot(q) + (JM^-1J^T)^-1 * \ddot(p)
+    --> f = -DCIJ_T * tau + DCIJ_T * C - OSIM * \dot(J) * \dot(q) + OSIM \ddot(p)
+    with p being the desired task space acceleration of the contact
     */
 
-    Eigen::VectorXd constant = DCIJ_T * coriolisVec - OSIM * contactFullJacDot * qdot;
+    // TODO: For now we choose zero, find a way to pass it to job, need one per contact
+    Eigen::VectorXd contactAcc;
+    if(forceOnly)
+    {
+      contactAcc = Eigen::Vector3d::Zero();
+    }
+    else
+    {
+      contactAcc = Eigen::Vector6d::Zero();
+    }
+
+    Eigen::VectorXd constant = DCIJ_T * coriolisVec - OSIM * contactFullJacDot * qdot + OSIM * contactAcc;
 
     // Now loop between every combination of min and max torques to get the corresponding 6D wrench
     // Then take only last 3 elements to get the force vertex and add it as generator
@@ -258,11 +291,25 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
         qhullVect.emplace_back(wrenchVertex.coeff(0));
         qhullVect.emplace_back(wrenchVertex.coeff(1));
         qhullVect.emplace_back(wrenchVertex.coeff(2));
+        qhullVect.emplace_back(wrenchVertex.coeff(3));
+        qhullVect.emplace_back(wrenchVertex.coeff(4));
+        qhullVect.emplace_back(wrenchVertex.coeff(5));
       }
-
-      qhullVect.emplace_back(wrenchVertex.coeff(3));
-      qhullVect.emplace_back(wrenchVertex.coeff(4));
-      qhullVect.emplace_back(wrenchVertex.coeff(5));
+      else // dim is 3, check whether we compute the force jac only or the force part of the full jac
+      {
+        if(forceOnly)
+        {
+          qhullVect.emplace_back(wrenchVertex.coeff(0));
+          qhullVect.emplace_back(wrenchVertex.coeff(1));
+          qhullVect.emplace_back(wrenchVertex.coeff(2));
+        }
+        else
+        {
+          qhullVect.emplace_back(wrenchVertex.coeff(3));
+          qhullVect.emplace_back(wrenchVertex.coeff(4));
+          qhullVect.emplace_back(wrenchVertex.coeff(5));
+        }
+      }
 
       itCounter++;
     }
