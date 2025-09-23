@@ -134,14 +134,14 @@ struct AsyncJob
     futureResult_ = std::async(
         [this]()
         {
-          running_ = true;
-          startedOnce_ = true;
-          canGetSharedState_ = true;
           auto start_compute = mc_rtc::clock::now();
           auto result = static_cast<Derived *>(this)->computeJob();
           timers_.dt_compute = mc_rtc::elapsed_ms_count(start_compute);
           return result;
         });
+    running_ = true;
+    startedOnce_ = true;
+    canGetSharedState_ = true;
     timers_.dt_startAsync = mc_rtc::elapsed_ms_count(start_async);
   }
 
@@ -173,7 +173,7 @@ struct AsyncJob
    */
   bool checkResult()
   {
-    if(!startedOnce_) return false;
+    if(!running_) return false;
     auto start_check = mc_rtc::clock::now();
     if(futureResult_.wait_for(std::chrono::seconds(0)) == std::future_status::ready && futureResult_.valid()
        && canGetSharedState_)
