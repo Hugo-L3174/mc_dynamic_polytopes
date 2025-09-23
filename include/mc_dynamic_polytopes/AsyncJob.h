@@ -131,17 +131,17 @@ struct AsyncJob
   void startAsync()
   {
     auto start_async = mc_rtc::clock::now();
-    running_ = true;
     futureResult_ = std::async(
         [this]()
         {
-          running_ = true;
-          startedOnce_ = true;
           auto start_compute = mc_rtc::clock::now();
           auto result = static_cast<Derived *>(this)->computeJob();
           timers_.dt_compute = mc_rtc::elapsed_ms_count(start_compute);
           return result;
         });
+    running_ = true;
+    startedOnce_ = true;
+    canGetSharedState_ = true;
     timers_.dt_startAsync = mc_rtc::elapsed_ms_count(start_async);
   }
 
@@ -173,11 +173,25 @@ struct AsyncJob
    */
   bool checkResult()
   {
-    if(!startedOnce_) return false;
+    if(!running_) return false;
     auto start_check = mc_rtc::clock::now();
-    if(futureResult_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+    if(futureResult_.wait_for(std::chrono::seconds(0)) == std::future_status::ready && futureResult_.valid()
+       && canGetSharedState_)
     {
-      lastResult_ = futureResult_.get();
+
+      try
+      {
+        lastResult_ = futureResult_.get();
+      }
+      catch(const std::exception & e)
+      {
+        mc_rtc::log::error("[{}] Exception in async job: {}", derived()->name(), e.what());
+        running_ = false;
+        canGetSharedState_ = false;
+        return false;
+      }
+
+      canGetSharedState_ = false; // prevent invalid multiple calls to future::get()
       if(logger_ && !inLogger_)
       {
         timers_.dt_loggerImpl = mc_rtc::timedExecution([this]() { addToLogger_(); }).count();
@@ -241,12 +255,21 @@ struct AsyncJob
     }
   }
 
+  std::string name() const
+  {
+    return "AsyncJob";
+  }
+
 protected: // bookkeeping for the async job
   std::atomic<bool> running_ = false;
   bool inLogger_ = false;
   bool inGUI_ = false;
   bool startedOnce_ = false;
+
   std::future<Result> futureResult_;
+  // true if futureResult_.get() has not yet been called, false otherwise
+  bool canGetSharedState_ = false;
+
   std::optional<Result> lastResult_;
   Timers timers_;
 
@@ -274,6 +297,11 @@ protected: // bookkeeping for the async job
   std::vector<std::string> guiCategory_;
 
 protected:
+  Derived * derived()
+  {
+    return static_cast<Derived *>(this);
+  }
+
   void addToLogger_()
   {
     auto contactPrefix = "perf_" + loggerPrefix_ + "_";

@@ -10,8 +10,8 @@ VRPRegionMinkSumJobResult VRPRegionMinkSumJob::computeJob()
 {
   // XXX: anything to initialize in result_?
   // init CWC polytope
+  result_ = VRPRegionMinkSumJobResult{};
   result_.CWCForces.reset(new Polytope_Rn());
-  result_.CWCMoments.reset(new Polytope_Rn());
   // init zmp region and intersection with ecmp region
   result_.zeroMomentRegion.reset(new Polytope_Rn());
   //
@@ -66,6 +66,11 @@ void VRPRegionMinkSumJob::computeMinkowskySumPolitopix()
   // for(const auto & active : activeContacts_)
   for(const auto & [active, contactPolytopes] : input_.contactsPolytopes)
   {
+    if(contactPolytopes.actuationPolytope->numberOfGenerators() == 0)
+    {
+      // mc_rtc::log::warning("[{}] Contact {} has empty force polytope, skipping it in mink sum", name_, active);
+      continue;
+    }
     boost::shared_ptr<Polytope_Rn> newContactPoly(new Polytope_Rn());
     // The friction + force intersection was overwritten in the force polytopes
     // Locking polytope mutex
@@ -106,10 +111,6 @@ void VRPRegionMinkSumJob::computeMinkowskySumPolitopix()
     }
 
     polytopesForces.emplace_back(newContactPoly);
-    if(withMoments_)
-    {
-      polytopesMoments.emplace_back(contactPolytopes.frictionConeMoments);
-    }
   }
 
   try
@@ -123,16 +124,6 @@ void VRPRegionMinkSumJob::computeMinkowskySumPolitopix()
   catch(const std::exception & e)
   {
     mc_rtc::log::error("[{}] Minkowski sum error: {}", name_, e.what());
-  }
-
-  // mc_rtc::log::info("CWCForces_ has {} generators and {} facets", CWCForces_->numberOfGenerators(),
-  // CWCForces_->numberOfHalfSpaces());
-  if(withMoments_)
-  {
-    MinkowskiSum Mink(polytopesMoments, newMomentPoly);
-    // mc_rtc::log::info("CWCMoments_ has {} generators and {} facets", CWCMoments_->numberOfGenerators(),
-    // CWCMoments_->numberOfHalfSpaces());
-    result_.CWCMoments = newMomentPoly;
   }
 
   vrpTimers_.dt_compute_minkSum = mc_rtc::elapsed_ms_count(start_minkSum);
@@ -197,24 +188,12 @@ void VRPRegionMinkSumJob::updateTrianglesRegionsGUIPolitopix()
     // scale 1 here: already position space
     update3DPolyTrianglesPolitopix(input_.zmpRegion, result_.ZMPTriangles, 1);
     update3DPolyTrianglesPolitopix(result_.zeroMomentRegion, result_.zeroMomentTriangles, 1);
-
-    if(withMoments_)
-    {
-      update3DPolyTrianglesPolitopix(result_.CWCMoments, result_.CWCMomentTriangles, guiScale_);
-    }
   }
   else
   {
     result_.CWCForceTriangles.clear();
-
     result_.ZMPTriangles.clear();
-
     result_.zeroMomentTriangles.clear();
-
-    if(withMoments_)
-    {
-      result_.CWCMomentTriangles.clear();
-    }
   }
   vrpTimers_.dt_compute_guiTrianglesRegions_ = mc_rtc::elapsed_ms_count(start_guiTriangles);
 }

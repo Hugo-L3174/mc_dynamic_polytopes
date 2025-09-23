@@ -216,6 +216,18 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
       }
     }
   }
+
+  std::string name() const
+  {
+    if(input_.contactName.size())
+    {
+      return "ContactPolytopeJob_" + input_.contactName;
+    }
+    else
+    {
+      return "ContactPolytopeJob";
+    }
+  }
 };
 
 } // namespace mc_dynamic_polytopes

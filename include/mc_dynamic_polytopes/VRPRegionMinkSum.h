@@ -39,7 +39,6 @@ struct VRPRegionMinkSumJobInput
 struct VRPRegionMinkSumJobResult
 {
   boost::shared_ptr<Polytope_Rn> CWCForces;
-  boost::shared_ptr<Polytope_Rn> CWCMoments;
   boost::shared_ptr<Polytope_Rn> zeroMomentRegion;
   // Internal matrices of planes and offsets of the regions for constraints
   std::pair<Eigen::MatrixXd, Eigen::VectorXd> DCMVRPPlanes; // Matrix constraint for force polytope
@@ -49,7 +48,6 @@ struct VRPRegionMinkSumJobResult
   // or check
   std::pair<Eigen::MatrixXd, Eigen::VectorXd> zeroMomentPlanes; // Matrix constraint for zero moment region
   std::vector<std::array<Eigen::Vector3d, 3>> CWCForceTriangles;
-  std::vector<std::array<Eigen::Vector3d, 3>> CWCMomentTriangles;
   std::vector<std::array<Eigen::Vector3d, 3>> ZMPTriangles;
   std::vector<std::array<Eigen::Vector3d, 3>> zeroMomentTriangles;
 };
@@ -57,7 +55,6 @@ struct VRPRegionMinkSumJobResult
 struct VRPRegionMinkSumJob : MakeAsyncJob<VRPRegionMinkSumJob, VRPRegionMinkSumJobInput, VRPRegionMinkSumJobResult>
 {
   bool withVRPOffset_ = true;
-  bool withMoments_ = false;
   double guiScale_ = 0.001;
 
 protected:
@@ -92,13 +89,13 @@ public: // XXX: should this be public?
     auto CWCCat = guiCategory_;
     CWCCat.push_back("Contact Wrench Cone");
 
+    const auto & result = *lastResult_;
     gui_->addElement(
         this, CWCCat,
-        mc_rtc::gui::Polyhedron("CWC forces", polyForceConfig_, [this]() { return result_.CWCForceTriangles; }),
-        mc_rtc::gui::Polyhedron("CWC moments", polyMomentConfig_, [this]() { return result_.CWCMomentTriangles; }),
-        mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [this]() { return result_.ZMPTriangles; }),
+        mc_rtc::gui::Polyhedron("CWC forces", polyForceConfig_, [&result]() { return result.CWCForceTriangles; }),
+        mc_rtc::gui::Polyhedron("ZMP area", polyZMPConfig_, [&result]() { return result.ZMPTriangles; }),
         mc_rtc::gui::Polyhedron("Zero moment region", polyZeroMomentAreaConfig_,
-                                [this]() { return result_.zeroMomentTriangles; }));
+                                [&result]() { return result.zeroMomentTriangles; }));
   }
 
   void load(const mc_rtc::Configuration & config)
@@ -107,6 +104,11 @@ public: // XXX: should this be public?
     config("polyhedronMoment", polyMomentConfig_);
     config("polyhedronZMP", polyZMPConfig_);
     config("polyhedronZeroMomentArea", polyZeroMomentAreaConfig_);
+  }
+
+  std::string name() const
+  {
+    return "VRPRegionMinkSumJob";
   }
 
 protected:

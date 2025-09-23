@@ -582,7 +582,6 @@ void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)
       job.DDfrictionCones_ = DDfrictionCones_;
       job.combineWithFriction_ = combineWithFriction_;
     }
-    VRPRegionMinkSumJob_.withMoments_ = withMoments_;
     VRPRegionMinkSumJob_.withVRPOffset_ = withVRPOffset_;
   };
   gui.addElement(this, category,
