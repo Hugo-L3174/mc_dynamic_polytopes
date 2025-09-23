@@ -73,7 +73,7 @@ void DynamicPolytope::computeRegions()
       job.load(config_, contactName);
     }
     job.contactTimers.dt_constructor = mc_rtc::elapsed_ms_count(start_constructor);
-    job.HrepMode_ = HrepMode_; // XXX
+    job.HrepMode_ = HrepMode_;
 
     if(!job.running())
     {
@@ -316,54 +316,6 @@ void DynamicPolytope::buildWrenchConeFromContact(int numberOfFrictionSides,
   momentPoly = newMomentPoly;
 }
 
-// FIXME: restore implementation
-void DynamicPolytope::computeFrictionConesFromContactSet(const mc_rbdyn::Robot & robot)
-{
-  // auto frictionCoeff = 0.7;
-  // auto nbFrictionSides = 5;
-  // auto maxForce = 250.;
-  // auto CoM = robot.com();
-  //
-  // for(const auto & contactName : activeContacts_)
-  // {
-  //   // dummy value: should need difference between controlled surface and the target in the contact pair
-  //   sva::PTransformd X_r1_r2 = sva::PTransformd::Identity();
-  //   auto & lastContactPolytope = lastContactPolytopes_.at(contactName);
-  //   if(!withMoments_)
-  //   {
-  //     buildFrictionConeFromContactWithHrep(nbFrictionSides, X_r1_r2, lastContactPolytope.frictionCone, frictionCoeff,
-  //     3);
-  //   }
-  //   else
-  //   {
-  //     // find limits of contact area for moment limits
-  //     double newContactHalfLength;
-  //     double newContactHalfWidth;
-  //     findHalfWidthLength(robot.surface(contactName), newContactHalfWidth, newContactHalfLength);
-  //     std::pair<std::pair<double, double>, sva::PTransformd> newContact(
-  //         std::pair<double, double>(newContactHalfLength, newContactHalfWidth), robot.surfacePose(contactName));
-  //
-  //     // TODO thread moments versions as well: add moment mutex + put mutexes as arguments
-  //     buildWrenchConeFromContact(nbFrictionSides, newContact, lastContactPolytope.frictionCone,
-  //         lastContactPolytope.frictionConeMoments, frictionCoeff, maxForce, CoM);
-  //   }
-  // }
-}
-
-//  TODO: restore implementation
-void DynamicPolytope::computeForcePolyFromContactSet(const mc_rbdyn::Robot & robot)
-{
-  // double forceScalingFactor = 1;
-  // for(const auto & contactName : activeContacts_)
-  // {
-  //   auto & lastContactPolytope = lastContactPolytopes_.at(contactName);
-  //   buildActuationPolytopeFromContact(contactName, robot,
-  //       lastContactPolytope.actuationPolytope, forceScalingFactor, 3);
-  // }
-}
-
-void DynamicPolytope::computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot) {}
-
 // TODO: restore implementation
 void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d /* comPosition */, const mc_rbdyn::Robot & robot)
 {
@@ -374,142 +326,6 @@ void DynamicPolytope::computeMomentsRegion(Eigen::Vector3d /* comPosition */, co
   // TopGeomTools::scalingFactor(CWCMoments_, scale);
   //
   // // TODO change coords from varignon (check) + check that corresponds to inside of eCMP region?
-}
-
-// Eigen::Vector3d projectPointInVRPRegion(Eigen::Vector3d testedPoint)
-// {
-//   constIteratorOfListOfGeometricObjects< boost::shared_ptr<Generator_Rn> > iteGN(CWCForces_->getListOfGenerators());
-//   for (iteGN.begin(); iteGN.end()!=true; iteGN.next()) {
-//     for (unsigned int j=0; j<iteGN.current()->numberOfFacets(); j++) {
-//       boost::shared_ptr<HalfSpace_Rn> HS = iteGN.current()->getFacet(j);
-//       boost::numeric::ublas::vector<double> projectedPoint;
-//       double halfSpaceNorm = norm_2(HS->vect());
-//       double disPoint2Hyp = HS->computeDistancePointHyperplane(iteGN.current()->vect(), projectedPoint,
-//       halfSpaceNorm);
-//       //std::cout << "d" << iteGN.currentIteratorNumber() << " = " << disPoint2Hyp << std::endl;
-//       if (disPoint2Hyp > 0.25*TOL || disPoint2Hyp < -0.25*TOL)
-//         isVeryClose = false;
-//     }
-//     if (isVeryClose == false) {
-//       averagePoint /= iteGN.current()->numberOfFacets();
-//       iteGN.current()->setCoordinates(averagePoint);
-//     }
-//   }
-// }
-
-// Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope)
-// {
-//   boost::numeric::ublas::vector<double> closestProjectedPoint;
-//   constIteratorOfListOfGeometricObjects< boost::shared_ptr<Generator_Rn> > iteGN(polytope->getListOfGenerators());
-//   for (iteGN.begin(); iteGN.end()!=true; iteGN.next()) {
-//     for (unsigned int j=0; j<iteGN.current()->numberOfFacets(); j++) {
-//       boost::shared_ptr<HalfSpace_Rn> HS = iteGN.current()->getFacet(j);
-//       boost::numeric::ublas::vector<double> projectedPoint;
-//       double halfSpaceNorm = norm_2(HS->vect());
-//       double disPoint2Hyp = HS->computeDistancePointHyperplane(iteGN.current()->vect(), projectedPoint,
-//       halfSpaceNorm);
-//       //std::cout << "d" << iteGN.currentIteratorNumber() << " = " << disPoint2Hyp << std::endl;
-//       if (disPoint2Hyp > 0.25*TOL || disPoint2Hyp < -0.25*TOL)
-//         isVeryClose = false;
-//     }
-//     if (isVeryClose == false) {
-//       averagePoint /= iteGN.current()->numberOfFacets();
-//       iteGN.current()->setCoordinates(averagePoint);
-//     }
-//   }
-//   return
-// }
-
-// TODO: restore implementation
-bool DynamicPolytope::checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn> & polytope)
-{
-  //   boost::numeric::ublas::vector<double> gravCenter(3);
-  //   TopGeomTools::gravityCenter(polytope, gravCenter);
-  //   Point_Rn testPoint(gravCenter(0), gravCenter(1), gravCenter(2));
-  //
-  //   int resultPolito = polytope->checkPoint(testPoint);
-  //   bool retResultPolitopix = false;
-  //   if(resultPolito == 1)
-  //   {
-  //     retResultPolitopix = true;
-  //   }
-  //
-  //   Eigen::MatrixXd Normals;
-  //   Eigen::VectorXd Offsets;
-  //   updatePlanesMatrixConstraint(polytope, Normals, Offsets);
-  //   Eigen::Vector3d testEigen(gravCenter(0), gravCenter(1), gravCenter(2));
-  //   Eigen::VectorXd test = Normals * testEigen - Offsets;
-  //   bool retResultEigen = true;
-  //   for(int coeff = 0; coeff < test.size(); coeff++)
-  //   {
-  //     if(test(coeff) > 0.0)
-  //     {
-  //       retResultEigen = false;
-  //     }
-  //   }
-  //
-  //   return retResultPolitopix && retResultEigen;
-}
-
-// FIXME: should be done per-contact
-// TODO: restore GUI computation
-void DynamicPolytope::updateTrianglesContactsGUIPolitopix()
-{
-  // auto start_guiTriangles = mc_rtc::clock::now();
-  // // Protecting set of names (threaded) then copying
-  // contactSetMutex_.lock();
-  // auto activeContactSet = activeContacts_;
-  // auto contactsToBeRemoved = contactsToRemove_;
-  // contactSetMutex_.unlock();
-  //
-  // int dim = Rn::getDimension() == 6 ? 6 : 3;
-  //
-  // for(const auto & contact : activeContactSet)
-  // {
-  //   auto contactPose = robot_.surfacePose(contact);
-  //
-  //   if(forcePolytopes_.at(contact)->dimension() == 3)
-  //   {
-  //     getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
-  //     getContactMutex(frictionConesMutexes_, contact).lock();
-  //     update3DPolyTrianglesPolitopix(frictionCones_.at(contact), frictionConesTrianglesMap_.at(contact), guiScale_,
-  //                                    contactPose);
-  //     getContactMutex(frictionConesMutexes_, contact).unlock();
-  //     getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
-  //
-  //     getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
-  //     getContactMutex(forcePolyMutexes_, contact).lock();
-  //     update3DPolyTrianglesPolitopix(forcePolytopes_.at(contact), forcePolyTrianglesMap_.at(contact), guiScale_,
-  //                                    contactPose);
-  //     getContactMutex(forcePolyMutexes_, contact).unlock();
-  //     getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
-  //   }
-  //   else
-  //   {
-  //     getContactMutex(momentTrianglesMutexes_, contact).lock();
-  //     getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
-  //     update6DPolyTrianglesPolitopix(forcePolytopes_.at(contact), momentPolytopesTrianglesMap_.at(contact),
-  //                                    forcePolyTrianglesMap_.at(contact), guiScale_, contactPose);
-  //     getContactMutex(momentTrianglesMutexes_, contact).unlock();
-  //     getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
-  //   }
-  // }
-  // for(const auto & contact : contactsToBeRemoved)
-  // {
-  //   getContactMutex(frictionConeTrianglesMutexes_, contact).lock();
-  //   frictionConesTrianglesMap_.at(contact).clear();
-  //   getContactMutex(frictionConeTrianglesMutexes_, contact).unlock();
-  //   if(dim == 6)
-  //   {
-  //     getContactMutex(momentTrianglesMutexes_, contact).lock();
-  //     momentPolytopesTrianglesMap_.at(contact).clear();
-  //     getContactMutex(momentTrianglesMutexes_, contact).unlock();
-  //   }
-  //   getContactMutex(forcePolyTrianglesMutexes_, contact).lock();
-  //   forcePolyTrianglesMap_.at(contact).clear();
-  //   getContactMutex(forcePolyTrianglesMutexes_, contact).unlock();
-  // }
-  // dt_compute_guiTrianglesContacts_ = mc_rtc::clock::now() - start_guiTriangles;
 }
 
 void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
@@ -528,7 +344,6 @@ void DynamicPolytope::updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
   }
 }
 
-// TODO: restore log
 void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
 {
   auto prefix = name_;
@@ -546,11 +361,6 @@ void DynamicPolytope::addToLogger(mc_rtc::Logger & logger)
   {
     job.addToLogger(*logger_, name_ + "_" + contactName);
   }
-
-  // }); logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesContacts", this,
-  //                    [this]() { return dt_guiTrianglesContacts().count(); });
-  // logger.addLogEntry("perf_" + prefix + name_ + "_guiTrianglesRegions", this,
-  //                    [this]() { return dt_guiTrianglesRegions().count(); });
 }
 
 void DynamicPolytope::addToGUI(mc_rtc::gui::StateBuilder * guiPtr)

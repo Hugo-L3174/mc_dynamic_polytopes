@@ -187,45 +187,14 @@ struct DynamicPolytope
   // Eigen::Vector3d projectPointInZeroMomentRegion(Eigen::Vector3d testedPoint);
 
 protected:
-  // Updates the internal maps of triangles of the contacts for gui display
-  void updateTrianglesContactsGUIPolitopix();
-
-  /* computes all cones from the surfaces with the given names (set by setCurrentContacts), reset the pointers of the
-  map and updates the H-description of the cone using the double description algorithm.
-  */
-  void computeFrictionConesFromContactSet(const mc_rbdyn::Robot & robot);
-
-  /* computes all force polytopes from the surfaces with the given names (set by setCurrentContacts), reset the pointers
-  of the map and updates the V-description of the poly using the double description algorithm.
-  */
-  void computeForcePolyFromContactSet(const mc_rbdyn::Robot & robot);
-
-  /* Computes for each contact in parallel: the friction cone and force polytope,
-  then their intersection back into the friction cone polytope
-  */
-  void computeFeasibleForcesFromContactSet(const mc_rbdyn::Robot & robot);
-
-  /* computes directly the V-rep of the CWC from individual contact friction cones and the moment limits transformed to
-  the CoM (transformation from contact) then runs double description to update H-rep
-  */
-  void computeCWCFromContactSet(const mc_rbdyn::Robot & robot);
-
   /* Computes the 3d volume formed between the possible ZMP area(s) and the CoM of the robot
   TODO this is potentially several convex areas! (caron tro) see how to handle this
   */
   boost::shared_ptr<Polytope_Rn> computeZMPRegion(Eigen::Vector3d comPosition);
 
-  // Creates a 6d contact friction cone from the contact surface border points
-  // The generators are computed then used to build the Polytope_Rn object which is added to the cones vector
-  // void computeWrenchConesFromContactSet(const mc_rbdyn::Robot & robot);
-
   // Computes the 3d volume of the moments from the contact surfaces borders resulting from the CWC generating rays at
   // these limits
   void computeMomentsRegion(Eigen::Vector3d comPosition, const mc_rbdyn::Robot & robot);
-
-  // Computes the convex hull of the CWC_ polytope
-  // Might be unnecessary, heavy algorithm to remove unnecessary faces
-  void computeResultHull();
 
   // Updates the feasible polytope representation internal to rbdyn contacts
   void updateRBDynPolytopes(const Eigen::MatrixXd & Normals,
@@ -251,7 +220,35 @@ protected:
   // Eigen::Vector3d projectPointInPolytope(Eigen::Vector3d testedPoint, boost::shared_ptr<Polytope_Rn> & polytope);
 
   // sanity check
-  bool checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn> & polytope);
+  bool checkGravityCenterInPolytope(boost::shared_ptr<Polytope_Rn> & polytope)
+  {
+    boost::numeric::ublas::vector<double> gravCenter(3);
+    TopGeomTools::gravityCenter(polytope, gravCenter);
+    Point_Rn testPoint(gravCenter(0), gravCenter(1), gravCenter(2));
+
+    int resultPolito = polytope->checkPoint(testPoint);
+    bool retResultPolitopix = false;
+    if(resultPolito == 1)
+    {
+      retResultPolitopix = true;
+    }
+
+    Eigen::MatrixXd Normals;
+    Eigen::VectorXd Offsets;
+    updatePlanesMatrixConstraint(polytope, Normals, Offsets);
+    Eigen::Vector3d testEigen(gravCenter(0), gravCenter(1), gravCenter(2));
+    Eigen::VectorXd test = Normals * testEigen - Offsets;
+    bool retResultEigen = true;
+    for(int coeff = 0; coeff < test.size(); coeff++)
+    {
+      if(test(coeff) > 0.0)
+      {
+        retResultEigen = false;
+      }
+    }
+
+    return retResultPolitopix && retResultEigen;
+  };
 
   // ------------------------------------------------------> GUI getters
 

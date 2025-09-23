@@ -27,7 +27,7 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
   rbd::Coriolis coriolis(input.mb);
   Eigen::MatrixXd coriolisMat = coriolis.coriolis(input.mb, input.mbc);
 
-  // XXX this version contains gravity and external forces, to check
+  // XXX this version contains both gravity and external forces, we use this one directly
   forwardDyn.computeC(input.mb, input.mbc);
   Eigen::VectorXd coriolisVec = forwardDyn.C();
 
@@ -35,17 +35,14 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
   // + transform between surface and the body
   const mc_rbdyn::Surface & surface = *input.surface;
   std::string bodyName = surface.bodyName();
-  const auto X_s_b = surface.X_b_s().inv();
+  const auto X_b_s = surface.X_b_s();
 
-  // auto X_s_b = robot.bodyPosW(input.surface->bodyName()) * (robot.surfacePose(contactName).inv());
+  // Building jacobian of the frame point on body in world frame
+  rbd::Jacobian jac(input.mb, bodyName, X_b_s.translation());
 
-  // XXX check if need transformation between body and frame OR between 0 and frame !
-  // XXX here I used the bodyJacobian to be already in the body frame but is this correct?
-  // Building jacobian to the contact frame
-  rbd::Jacobian jac(input.mb, bodyName, X_s_b.inv().translation());
-
-  // Dense jacobian
+  // Dense jacobian in body frame
   Eigen::MatrixXd denseJac = jac.bodyJacobian(input.mb, input.mbc);
+  // Dense jac dot in body frame
   Eigen::MatrixXd denseJacDot = jac.bodyJacobianDot(input.mb, input.mbc);
   // mc_rtc::log::info("Dense Jacobian: \n{}", denseJac);
   // mc_rtc::log::info("Dense Jacobian {} is of dimensions {}", contactName, denseJac.rows(), denseJac.cols());
@@ -75,7 +72,7 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
   const Eigen::VectorXd qdot = rbd::dofToVector(input.mb, input.mbc.alpha);
   const Eigen::VectorXd qddot = rbd::dofToVector(input.mb, input.mbc.alphaD);
 
-  // XXX tentative selection vector for contact by using the contact jacobian
+  // Selection vector for contact by using the contact jacobian: select this dof if jacobian of contact is not zero
   Eigen::VectorXd actuatorSelectionVector = Eigen::VectorXd::Zero(input.mb.nrDof());
   int numberOfActuatorsPlaying = 0;
 
@@ -252,8 +249,8 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
     {
       // mc_rtc::log::info("torque combination vector for {} is \n{}", contactName, torqueCombination);
       Eigen::VectorXd wrenchVertex = -DCIJ_T * torqueCombination + constant;
-      // mc_rtc::log::info("Wrench vertex {} for {} is {}", itCounter, contactName,
-      //                   wrenchVertex.segment(3, 3).transpose());
+      // mc_rtc::log::info("Wrench vertex {} for {} is {}", itCounter, input.contactName,
+      //                   wrenchVertex.transpose());
 
       // Insert force elements (3, 4, 5 of wrench 6D vector) or all wrench
       if(dim == 6)
@@ -309,13 +306,6 @@ void ContactPolytopeJob::buildActuationPolytopeFromContact(const ContactPolytope
   actuationPolytope = newPoly;
 }
 
-// ContactPolytopeResult DynamicPolytope::buildFeasiblePolytopeFromContact(const std::string contactName,
-//       const ContactPolytopeInput input,
-//                                                        const sva::PTransformd X_r1_r2,
-//                                                        int numberOfFrictionSides,
-//                                                        double forceScalingFactor,
-//                                                        double frictionCoeff,
-//                                                        ContactcontactTimers & contactTimers)
 ContactPolytopeResult ContactPolytopeJob::computeJob()
 {
   ContactPolytopeResult result;
@@ -372,7 +362,7 @@ ContactPolytopeResult ContactPolytopeJob::computeJob()
 
   if(dim == 3)
   {
-    politopixAPI::computeDoubleDescriptionWithoutCheck(actuationPolytope, 3000);
+    politopixAPI::computeDoubleDescriptionWithoutCheck(actuationPolytope, 5000);
   }
 
   // politopixAPI::computeIntersectionWithoutCheck(actuationPolytope, frictionCone);
@@ -390,7 +380,7 @@ ContactPolytopeResult ContactPolytopeJob::computeJob()
                                result.frictionConesPlanes.second);
   updatePlanesMatrixConstraint(result.actuationPolytope, result.forcePolyPlanes.first, result.forcePolyPlanes.second);
 
-  // Check if a gui scale exists in datastore from somewhere else, and if so apply it to the polytope
+  // Check if a gui scale exists in datastore from somewhere else, and if so apply it to the polytope (GUI only)
   if(ctl_)
   {
     if(ctl_->datastore().has("Polytopes::GUIScale::" + input_.contactName))
