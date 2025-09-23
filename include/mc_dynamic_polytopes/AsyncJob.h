@@ -135,7 +135,7 @@ struct AsyncJob
         [this]()
         {
           auto start_compute = mc_rtc::clock::now();
-          auto result = static_cast<Derived *>(this)->computeJob();
+          auto result = derived().computeJob();
           timers_.dt_compute = mc_rtc::elapsed_ms_count(start_compute);
           return result;
         });
@@ -185,7 +185,7 @@ struct AsyncJob
       }
       catch(const std::exception & e)
       {
-        mc_rtc::log::error("[{}] Exception in async job: {}", derived()->name(), e.what());
+        mc_rtc::log::error("[{}] Exception in async job: {}", derived().name(), e.what());
         running_ = false;
         canGetSharedState_ = false;
         return false;
@@ -297,9 +297,9 @@ protected: // bookkeeping for the async job
   std::vector<std::string> guiCategory_;
 
 protected:
-  Derived * derived()
+  Derived & derived()
   {
-    return static_cast<Derived *>(this);
+    return static_cast<Derived &>(*this);
   }
 
   void addToLogger_()
@@ -310,12 +310,12 @@ protected:
     logger_->addLogEntry(contactPrefix + "loggerImpl [ms]", this, [this]() { return timers_.dt_loggerImpl; });
     logger_->addLogEntry(contactPrefix + "guiImpl [ms]", this, [this]() { return timers_.dt_guiImpl; });
     logger_->addLogEntry(contactPrefix + "async_compute [ms]", this, [this]() { return timers_.dt_compute.load(); });
-    static_cast<Derived *>(this)->addToLoggerImpl();
+    derived().addToLoggerImpl();
   }
 
   void addToGUI_()
   {
-    static_cast<Derived *>(this)->addToGUIImpl();
+    derived().addToGUIImpl();
   }
 };
 
