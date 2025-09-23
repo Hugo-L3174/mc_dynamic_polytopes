@@ -109,6 +109,11 @@ public: // XXX: should this be public?
     config("polyhedronZeroMomentArea", polyZeroMomentAreaConfig_);
   }
 
+  std::string name() const
+  {
+    return "VRPRegionMinkSumJob";
+  }
+
 protected:
   // Computes the minkowsky sum of the given friction cones and puts the result in the CWC_ polytope object
   void computeMinkowskySumPolitopix();
