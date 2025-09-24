@@ -183,7 +183,7 @@ void DynamicPolytope::computeRegions()
       {
         const auto & job = feasiblePolytopesJobs_.at(contactName);
         input.contactsPolytopes[contactName] = *job.lastResult();
-        input.contactsPose[contactName] = refContactTransforms_.at(contactName);
+        input.contactsPose[contactName] = robot.surface(contactName).X_0_s(robot);
       }
 
       input.zmpRegion = zmpRegionJob_.lastResult()->zmpRegion;
