@@ -61,6 +61,7 @@ void DynamicPolytope::computeRegions()
   {
     auto start_constructor = mc_rtc::clock::now();
     auto & job = feasiblePolytopesJobs_[contactName];
+    // FIXME: segfaults in the GUI when removing contacts
     job.contactRBDyn_ = &contactsRBDyn_.at(contactName);
     // Check if a controller was passed for datastore calls
     if(ctl_)

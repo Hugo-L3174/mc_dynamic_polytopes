@@ -172,18 +172,29 @@ struct ContactPolytopeJob : public MakeAsyncJob<ContactPolytopeJob, ContactPolyt
                      Polyhedron(fmt::format(contact + " moments"), polyMomentConfig_,
                                 [&result]() { return result.momentPolytopesTriangles; }));
 
-    gui_->addElement(this, coeffsCat,
-                     NumberSlider(
-                         fmt::format(contact + " force alpha [0.001-1]"),
-                         [this, contact]() { return input_.forceScalingFactor.load(); },
-                         [this](double scale) { input_.forceScalingFactor = scale; }, 0.001, 1.0),
-                     IntegerInput(
-                         fmt::format(contact + " number of friction sides"),
-                         [this]() { return input_.numberOfFrictionSides.load(); },
-                         [this](int nbFrictionSides) { input_.numberOfFrictionSides = nbFrictionSides; }),
-                     NumberInput(
-                         fmt::format(contact + " friction coefficient"), [this]() { return contactRBDyn_->friction(); },
-                         [this](double mu) { contactRBDyn_->friction(mu); }));
+    gui_->addElement(
+        this, coeffsCat,
+        NumberSlider(
+            fmt::format(contact + " force alpha [0.001-1]"),
+            [this, contact]() { return input_.forceScalingFactor.load(); },
+            [this](double scale) { input_.forceScalingFactor = scale; }, 0.001, 1.0),
+        IntegerInput(
+            fmt::format(contact + " number of friction sides"),
+            [this]() { return input_.numberOfFrictionSides.load(); },
+            [this](int nbFrictionSides) { input_.numberOfFrictionSides = nbFrictionSides; })
+
+        // FIXME: displaying the contactRBDyn_ pointer is unsafe, it may have been deleted by mc_rtc
+        // Figure out why, it is probably an issue of ordering between when the contact is removed from the problem,
+        // when the gui callback is called, and when this job is destructed by DynamicPolytope
+        // A clean solution most likely involves mc_rtc emitting signals on contact creation/desctruction
+        // NumberInput(
+        //     fmt::format(contact + " friction coefficient"),
+        //     [this]() { contactRBDyn_->friction(); },
+        //     [this](double mu)
+        //     {
+        //      contactRBDyn_->friction(mu);
+        //     })
+    );
   }
 
   void load(const mc_rtc::Configuration & config, const std::string & contactName)
