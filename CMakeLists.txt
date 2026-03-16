@@ -13,17 +13,27 @@ set(PROJECT_URL "")
 set(PROJECT_USE_CMAKE_EXPORT TRUE)
 set(CXX_DISABLE_WERROR 1)
 
-include(cmake/base.cmake)
+
+include(cmake/get-jrl-cmakemodules.cmake)
 
 project(${PROJECT_NAME} LANGUAGES CXX VERSION ${PROJECT_VERSION})
 
+project(
+  mc_dynamic_polytopes
+  VERSION 1.0.1
+  DESCRIPTION "mc_rtc library for dynamic balance polytopes computations using politopix"
+  HOMEPAGE_URL "https://github.com/Hugo-L3174/mc_dynamic_polytopes"
+)
+
+jrl_configure_defaults()
+
 # cmake macro for project dependencies
-add_project_dependency(polito REQUIRED NO_MODULE)
-add_project_dependency(Qhull REQUIRED)
+jrl_find_package(polito REQUIRED NO_MODULE)
+jrl_find_package(Qhull REQUIRED)
 
 # Check if the project is built inside mc_rtc
 if(NOT TARGET mc_rtc::mc_control)
-  find_package(mc_rtc REQUIRED)
+  jrl_find_package(mc_rtc REQUIRED)
 endif()
 
 
@@ -81,3 +91,7 @@ install(
 install(DIRECTORY include/mc_dynamic_polytopes
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+
+
+# jrl_print_dependencies_summary()
+jrl_print_options_summary()

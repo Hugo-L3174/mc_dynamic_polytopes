@@ -1,4 +1,3 @@
-#include "mc_dynamic_polytopes/Time.h"
 #include <mc_dynamic_polytopes/DynamicPolytope.h>
 
 namespace mc_dynamic_polytopes
