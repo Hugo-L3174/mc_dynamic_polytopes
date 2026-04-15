@@ -1,28 +1,13 @@
-cmake_minimum_required(VERSION 3.10)
-
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CXX_DISABLE_WERROR 1)
-set(CMAKE_CXX_STANDARD 11)
-
-set(PROJECT_NAME mc_dynamic_polytopes)
-set(PROJECT_VERSION 0.1.0)
-set(PROJECT_DESCRIPTION "")
-set(PROJECT_URL "")
-
-# jrl-cmakemodules minimal settings
-set(PROJECT_USE_CMAKE_EXPORT TRUE)
-set(CXX_DISABLE_WERROR 1)
-
+cmake_minimum_required(VERSION 3.22)
 
 include(cmake/get-jrl-cmakemodules.cmake)
-
-project(${PROJECT_NAME} LANGUAGES CXX VERSION ${PROJECT_VERSION})
 
 project(
   mc_dynamic_polytopes
   VERSION 1.0.1
   DESCRIPTION "mc_rtc library for dynamic balance polytopes computations using politopix"
   HOMEPAGE_URL "https://github.com/Hugo-L3174/mc_dynamic_polytopes"
+  LANGUAGES CXX
 )
 
 jrl_configure_defaults()
@@ -37,19 +22,16 @@ if(NOT TARGET mc_rtc::mc_control)
 endif()
 
 
-# add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
-# target_include_directories(${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<INSTALL_INTERFACE:include>)
-# set_target_properties(${PROJECT_NAME} PROPERTIES COMPILE_FLAGS "-DEIGEN_CDDLIB_EXPORTS")
-# target_link_libraries(${PROJECT_NAME} PUBLIC cdd::cdd)
-# target_include_directories(${PROJECT_NAME} SYSTEM PUBLIC "${EIGEN3_INCLUDE_DIR}")
-
-# install(TARGETS ${PROJECT_NAME}
-#     EXPORT "${TARGETS_EXPORT_NAME}"
-#     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-#     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-#     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-# )
-# install(FILES ${HEADERS} DESTINATION include/${PROJECT_NAME})
+set(HEADERS
+  include/mc_dynamic_polytopes/AsyncJob.h
+  include/mc_dynamic_polytopes/ContactPolytope.h
+  include/mc_dynamic_polytopes/DynamicPolytope.h
+  include/mc_dynamic_polytopes/GUIComputations.h
+  include/mc_dynamic_polytopes/PolytopeFuncs.h
+  include/mc_dynamic_polytopes/VRPRegionMinkSum.h
+  include/mc_dynamic_polytopes/WrenchCones.h
+  include/mc_dynamic_polytopes/ZMPRegion.h
+)
 
 add_library(DynamicPolytope SHARED
   ${PROJECT_SOURCE_DIR}/src/WrenchCones.cpp
@@ -69,6 +51,9 @@ target_include_directories(DynamicPolytope
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+jrl_target_headers(DynamicPolytope PUBLIC HEADERS ${HEADERS} BASE_DIRS include)
+set_target_properties(DynamicPolytope PROPERTIES VERSION ${PROJECT_VERSION})
+
 
 target_link_libraries(DynamicPolytope
   PUBLIC
@@ -80,17 +65,8 @@ target_link_libraries(DynamicPolytope
 add_subdirectory(tests)
 
 #### Exporting targets and installing ####
-
-install(
-  TARGETS DynamicPolytope
-  EXPORT "${TARGETS_EXPORT_NAME}"
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-
-install(DIRECTORY include/mc_dynamic_polytopes
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
+jrl_add_export_component(NAME DynamicPolytope TARGETS DynamicPolytope)
+jrl_export_package()
 
 
 # jrl_print_dependencies_summary()
