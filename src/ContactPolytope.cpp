@@ -1,5 +1,4 @@
 #include <RBDyn/Coriolis.h>
-#include "mc_dynamic_polytopes/Time.h"
 #include <mc_dynamic_polytopes/ContactPolytope.h>
 
 namespace mc_dynamic_polytopes

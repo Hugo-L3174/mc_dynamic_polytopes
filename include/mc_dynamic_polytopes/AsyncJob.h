@@ -3,7 +3,6 @@
 #include <mc_rtc/gui/StateBuilder.h>
 #include <mc_rtc/log/Logger.h>
 #include <future>
-#include <mc_dynamic_polytopes/Time.h>
 #include <optional>
 
 // TODO: integrate into mc_rtc
