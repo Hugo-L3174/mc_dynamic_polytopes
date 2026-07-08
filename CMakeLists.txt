@@ -69,6 +69,11 @@ target_link_libraries(DynamicPolytope
 
 add_subdirectory(tests)
 
+option(WITH_POLYTOPES_BENCHMARK "Build benchmark for mc_dynamic_polytope library" OFF)
+if(WITH_POLYTOPES_BENCHMARK)
+  add_subdirectory(benchmark)
+endif()
+
 #### Exporting targets and installing ####
 
 install(
